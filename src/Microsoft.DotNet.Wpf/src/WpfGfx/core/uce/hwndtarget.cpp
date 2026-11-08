@@ -14,6 +14,8 @@
 //---------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "quicker-native-contract-target.h"
+#include "../common/quicker-wheel-pacing.h"
 #include <shellscalingapi.h>
 
 MtDefine(CSlaveHWndRenderTarget, MILRender, "CSlaveHWndRenderTarget");
@@ -83,6 +85,38 @@ CSlaveHWndRenderTarget::Render(
     __out_ecount(1) bool *pfNeedsPresent
     )
 {
+    static const bool measure = []() { WCHAR value[8] = {}; if (GetEnvironmentVariableW(L"QUICKER_GPU_RUN_COUNTERS", value, 8) == 1 && value[0] == L'1') return true; return GetEnvironmentVariableW(L"QUICKER_GPU_ACCOUNTING", value, 8) == 1 && value[0] == L'1'; }();
+    if (measure && m_hWnd)
+    {
+        if (!::GetPropW(m_hWnd, L"Quicker.WpfMeasureThread")) ::SetPropW(m_hWnd, L"Quicker.WpfMeasureThread", reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(GetCurrentThreadId())));
+        ULONG_PTR count = reinterpret_cast<ULONG_PTR>(::GetPropW(m_hWnd, L"Quicker.WpfMeasureRenders")) + 1;
+        ::SetPropW(m_hWnd, L"Quicker.WpfMeasureRenders", reinterpret_cast<HANDLE>(count));
+    }
+    // 注册窗口由矢量 GPU 后端负责，原目标禁止光栅化/呈现，不能无声回退。
+    if (m_hWnd && ::GetPropW(m_hWnd, L"Quicker.WpfGpuSceneTarget"))
+    {
+        ULONG_PTR count = reinterpret_cast<ULONG_PTR>(::GetPropW(m_hWnd, L"Quicker.WpfGpuSuppressCount")) + 1;
+        ::SetPropW(m_hWnd, L"Quicker.WpfGpuSuppressCount", reinterpret_cast<HANDLE>(count));
+        if (count == 1 || count % 60 == 0)
+        {
+            WCHAR path[1024] = {};
+            if (GetEnvironmentVariableW(L"QUICKER_GPU_WPF_AUDIT", path, ARRAYSIZE(path)))
+            {
+                HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (file != INVALID_HANDLE_VALUE)
+                {
+                    char line[160] = {}; DWORD written;
+                    StringCchPrintfA(line, ARRAYSIZE(line), "%p,%Iu,%lu\n", m_hWnd, count, GetCurrentThreadId());
+                    WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, NULL);
+                    CloseHandle(file);
+                }
+            }
+        }
+        // 只请求WPF调度，不设置m_fNeedsPresent，也不创建/呈现旧D3D9目标。
+        *pfNeedsPresent = WheelWpfPacingEnabled();
+        if (*pfNeedsPresent) WheelPacingAdd(2);
+        return S_OK;
+    }
     HRESULT hr = S_OK;
 
     IFC(EnsureRenderTargetInternal());
@@ -881,12 +915,19 @@ CSlaveHWndRenderTarget::EnsureRenderTargetInternal()
 
         pMILFactory = m_pComposition->GetMILFactory();
 
-        IFC(pMILFactory->CreateDesktopRenderTarget(
-            m_hWnd,
-            m_WindowLayerType,
-            creationFlags,
-            &m_pRenderTarget
-            ));
+        if (CQuickerNativeContractRT::Enabled(m_hWnd))
+        {
+            IFC(CQuickerNativeContractRT::Create(m_hWnd, &m_pRenderTarget));
+        }
+        else
+        {
+            IFC(pMILFactory->CreateDesktopRenderTarget(
+                m_hWnd,
+                m_WindowLayerType,
+                creationFlags,
+                &m_pRenderTarget
+                ));
+        }
 
         EventWriteWClientDesktopRTCreateEnd((UINT64)m_hWnd);
 
@@ -1293,6 +1334,7 @@ CSlaveHWndRenderTarget::GetNumQueuedPresents(
         &&  m_pRenderTarget
         )
     {
+        WheelPacingAdd(17);
         IFC(m_pRenderTarget->GetNumQueuedPresents(puNumQueuedPresents));
     }
     else

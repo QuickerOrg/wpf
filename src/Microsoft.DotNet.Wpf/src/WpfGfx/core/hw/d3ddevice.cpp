@@ -1,4 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
+﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
@@ -32,6 +32,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-wheel-counters.h"
 #include "HwGraphicsCards.h"
 
 using namespace dxlayer;
@@ -3607,6 +3608,7 @@ CD3DDeviceLevel1::PresentWithGDI(
             pMILDC->GetULWFlags(), // flags
             prcSource
             );
+        WheelRecordSubmit(hWnd, hr, 2);
         // If we get this error, then UpdateLayeredWindow
         // probably failed because the size in sz didn't exactly match the
         // window size.  Ignore this error (rather than crash).

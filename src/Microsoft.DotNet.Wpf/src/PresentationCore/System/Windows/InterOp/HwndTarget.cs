@@ -72,6 +72,9 @@ namespace System.Windows.Interop
         /// </summary>
         private static readonly object s_lockObject = new object();
 
+        private static WindowMessage s_d3d11Region;
+        [DllImport("Quicker.WpfD3D11Presenter.dll", EntryPoint="TrialApplyRegion", CallingConvention=CallingConvention.Cdecl)]
+        private static extern int ApplyD3D11Region(IntPtr hwnd, ulong generation);
         private static WindowMessage s_updateWindowSettings;
 
         private static WindowMessage s_needsRePresentOnWake;
@@ -99,7 +102,13 @@ namespace System.Windows.Interop
 
         private MatrixTransform _worldTransform;
 
-        private RenderMode _renderModePreference = RenderMode.Default;
+        internal static readonly bool GpuSceneTrial = Environment.GetEnvironmentVariable("QUICKER_WPF_GPU_SCENE") == "1";
+        internal static readonly bool GpuSceneUlwTrial = GpuSceneTrial && Environment.GetEnvironmentVariable("QUICKER_GPU_PRESENTATION") == "ulw";
+        internal static readonly bool D3D11PresentationTrial =
+            Environment.GetEnvironmentVariable("QUICKER_WPF_D3D11_PRESENT") == "1";
+        private static readonly bool SoftwareDefaultTrial =
+            Environment.GetEnvironmentVariable("QUICKER_WPF_SOURCE_DEFAULT") == "software";
+        private RenderMode _renderModePreference = SoftwareDefaultTrial ? RenderMode.SoftwareOnly : RenderMode.Default;
 
         private NativeMethods.HWND _hWnd;
 
@@ -205,6 +214,7 @@ namespace System.Windows.Interop
         /// </summary>
         static HwndTarget()
         {
+            s_d3d11Region = UnsafeNativeMethods.RegisterWindowMessage("Quicker.WpfD3D11.ApplyRegion");
             s_updateWindowSettings = UnsafeNativeMethods.RegisterWindowMessage("UpdateWindowSettings");
             s_needsRePresentOnWake = UnsafeNativeMethods.RegisterWindowMessage("NeedsRePresentOnWake");
             s_DisplayDevicesAvailabilityChanged =
@@ -754,6 +764,16 @@ namespace System.Windows.Interop
                 channel
                 );
 
+            if (SoftwareDefaultTrial)
+            {
+                DUCE.CompositionTarget.SetRenderingMode(_compositionTarget.GetHandle(channel),
+                    (MILRTInitializationFlags)RenderingMode.Software, channel);
+            }
+
+            string trialLog = Environment.GetEnvironmentVariable("QUICKER_WPF_TARGET_LOG");
+            if (!string.IsNullOrEmpty(trialLog))
+                System.IO.File.AppendAllText(trialLog, $"create,{_hWnd.MakeHandleRef(this).Handle.ToInt64()},{_renderModePreference},{D3D11PresentationTrial}\n");
+
             DUCE.ResourceHandle hWorldTransform = ((DUCE.IResource)_worldTransform).AddRefOnChannel(channel);
 
             DUCE.CompositionNode.SetTransform(
@@ -935,6 +955,12 @@ namespace System.Windows.Interop
         /// </summary>
         internal IntPtr HandleMessage(WindowMessage msg, IntPtr wparam, IntPtr lparam)
         {
+            if (D3D11PresentationTrial && msg == s_d3d11Region)
+            {
+                if (!IsDisposed)
+                    Marshal.ThrowExceptionForHR(ApplyD3D11Region(_hWnd.MakeHandleRef(this).Handle, unchecked((ulong)wparam.ToInt64())));
+                return Handled;
+            }
             IntPtr result = Unhandled;
 
             // Handle custom messages with IDs stored in a non-const
@@ -1152,7 +1178,11 @@ namespace System.Windows.Interop
                             {
                                 // We need layered composition to accomplish per-pixel opacity.
                                 //
-                                styleStruct->styleNew |= NativeMethods.WS_EX_LAYERED;
+                                if (D3D11PresentationTrial)
+                                    styleStruct->styleNew = (styleStruct->styleNew & ~NativeMethods.WS_EX_LAYERED) | 0x00200000;
+                                else
+                                    styleStruct->styleNew |= NativeMethods.WS_EX_LAYERED;
+                                if (GpuSceneTrial && !GpuSceneUlwTrial) styleStruct->styleNew |= 0x00200000;
                             }
                             else
                             {
@@ -2149,7 +2179,7 @@ namespace System.Windows.Interop
             Int32 style = UnsafeNativeMethods.GetWindowLong(_hWnd.MakeHandleRef(this), NativeMethods.GWL_STYLE);
             Int32 exStyle = UnsafeNativeMethods.GetWindowLong(_hWnd.MakeHandleRef(this), NativeMethods.GWL_EXSTYLE);
 
-            bool isLayered = (exStyle & NativeMethods.WS_EX_LAYERED) != 0;
+            bool isLayered = (exStyle & NativeMethods.WS_EX_LAYERED) != 0 || (D3D11PresentationTrial && _usesPerPixelOpacity);
 
             bool isChild = (style & NativeMethods.WS_CHILD) != 0;
             bool isRTL = (exStyle & NativeMethods.WS_EX_LAYOUTRTL) != 0;
@@ -2183,7 +2213,7 @@ namespace System.Windows.Interop
                 // The window is layered but should not be -- unset the layered flag.
                 UnsafeNativeMethods.SetWindowLong(_hWnd.MakeHandleRef(this), NativeMethods.GWL_EXSTYLE, new IntPtr(exStyle & ~NativeMethods.WS_EX_LAYERED));
             }
-            else if(isLayered && flags != MILTransparencyFlags.Opaque && _isRenderTargetEnabled && (width == 0 || height == 0))
+            else if(!D3D11PresentationTrial && isLayered && flags != MILTransparencyFlags.Opaque && _isRenderTargetEnabled && (width == 0 || height == 0))
             {
                 // The window is already layered, and it should be.  But we are enabling a window
                 // that is has a 0-size dimension.  This may cause us to leave the last sprite

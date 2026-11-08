@@ -13,6 +13,12 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-wheel-pacing.h"
+
+extern "C" __declspec(dllexport) int __cdecl QuickerReadPacingCounters(LONGLONG* values,int capacity){
+ if(!values||capacity!=20)return 0;for(int i=0;i<20;++i)values[i]=InterlockedCompareExchange64(&g_wheelPacing[i],0,0);
+ LARGE_INTEGER f{};QueryPerformanceFrequency(&f);values[0]=1;values[1]=WheelPacingCountersEnabled()?1:0;values[10]=f.QuadPart;values[18]=WheelWpfPacingEnabled()?1:0;return 20;
+}
 
 MtDefine(CRenderTargetManager, MILRender, "CRenderTargetManager");
 
@@ -603,6 +609,7 @@ CRenderTargetManager::Present(
 
     if (fGPUThrottlingEnabled)
     {
+        WheelPacingAdd(14);
         IFC(WaitForGPU());
     }
 
@@ -795,6 +802,7 @@ CRenderTargetManager::SleepForGPUThrottling(
 {
     if (iTimeToSleep > 0)
     {
+        WheelPacingAdd(16);
         QPC_TIME qpcStartTime = 0;
         QPC_TIME qpcEndTime = 0;
 
@@ -1163,12 +1171,16 @@ CRenderTargetManager::WaitForDwm(
     //
     // If we are asked to present in the future, then wait until VBlank
     //
+    WheelPacingAdd(3);
     if (!m_fQPCSupported || qpcCurrentTime < *pqpcPresentationTime)
     {
         //
         // Wait until VBlank and until all of our current Dx updates are complete.
         // 
+        LARGE_INTEGER before{},after{};const bool countWait=WheelPacingCountersEnabled();
+        if(countWait){QueryPerformanceCounter(&before);WheelPacingAdd(4);InterlockedExchange64(&g_wheelPacing[9],GetCurrentThreadId());}
         MIL_THR(m_pfnDwmpFlush());
+        if(countWait){QueryPerformanceCounter(&after);WheelPacingAdd(SUCCEEDED(hr)?5:6);WheelPacingAdd(7,after.QuadPart-before.QuadPart);InterlockedExchange64(&g_wheelPacing[8],hr);}
 
         //
         // Flushes can time-out, this is principally intended to 
@@ -1209,6 +1221,7 @@ CRenderTargetManager::WaitForDwm(
         }
         else
         {
+            WheelPacingAdd(15);
             *pePresentationResults = MilPresentationResults::Dwm;
             *puiRefreshRate = info.rateCompose.uiNumerator / info.rateCompose.uiDenominator;
             *pqpcPresentationTime = info.qpcVBlank;

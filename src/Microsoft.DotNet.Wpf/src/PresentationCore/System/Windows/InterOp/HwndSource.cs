@@ -244,7 +244,11 @@ namespace System.Windows.Interop
 
             if (parameters.EffectivePerPixelOpacity)
             {
-                parameters.ExtendedWindowStyle |= NativeMethods.WS_EX_LAYERED;
+                if (HwndTarget.D3D11PresentationTrial)
+                    parameters.ExtendedWindowStyle = (parameters.ExtendedWindowStyle & ~NativeMethods.WS_EX_LAYERED) | 0x00200000;
+                else
+                    parameters.ExtendedWindowStyle |= NativeMethods.WS_EX_LAYERED;
+                if (HwndTarget.GpuSceneTrial && !HwndTarget.GpuSceneUlwTrial) parameters.ExtendedWindowStyle |= 0x00200000;
             }
             else
             {

@@ -25,6 +25,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-wheel-pacing.h"
 
 #define ENABLE_NON_LDDM_DWM 1
 
@@ -316,14 +317,14 @@ HRESULT CD3DDeviceManager::GetSWDevice(
         // performance and app compat, we just grab the desktop window.
         //
         
-        IFC(m_pID3D->CreateDevice(
+        IFC(WheelPacingDeviceResult(m_pID3D->CreateDevice(
             D3DADAPTER_DEFAULT,
             D3DDEVTYPE_SW,
             GetDesktopWindow(),
             dwBehaviorFlags,
             &presentParams,
             &pIDirect3DDevice
-            ));
+            )));
 
         IFC(CD3DDeviceLevel1::Create(
             pIDirect3DDevice,
@@ -1603,7 +1604,7 @@ CD3DDeviceManager::CreateNewDevice(
 
         if (pID3DEx)
         {            
-            MIL_THR(pID3DEx->CreateDeviceEx(
+            MIL_THR(WheelPacingDeviceResult(pID3DEx->CreateDeviceEx(
                 pD3DCreateParams->AdapterOrdinal,
                 pD3DCreateParams->DeviceType,
                 pD3DCreateParams->hFocusWindow,
@@ -1611,7 +1612,7 @@ CD3DDeviceManager::CreateNewDevice(
                 rgPresentParams,
                 NULL, // fullscreen display mode
                 &pID3DDeviceEx
-                ));
+                )));
             if (SUCCEEDED(hr))
             {
                 hr = pID3DDeviceEx->QueryInterface(IID_IDirect3DDevice9, (void**)&pID3DDevice);
@@ -1620,14 +1621,14 @@ CD3DDeviceManager::CreateNewDevice(
         }
         else
         {
-            MIL_THR(m_pID3D->CreateDevice(
+            MIL_THR(WheelPacingDeviceResult(m_pID3D->CreateDevice(
                 pD3DCreateParams->AdapterOrdinal,
                 pD3DCreateParams->DeviceType,
                 pD3DCreateParams->hFocusWindow,
                 pD3DCreateParams->BehaviorFlags,
                 rgPresentParams,
                 &pID3DDevice
-                ));
+                )));
         }
 
         //
@@ -1644,7 +1645,7 @@ CD3DDeviceManager::CreateNewDevice(
 
             if (pID3DEx)
             {
-                MIL_THR(pID3DEx->CreateDeviceEx(
+                MIL_THR(WheelPacingDeviceResult(pID3DEx->CreateDeviceEx(
                     pD3DCreateParams->AdapterOrdinal,
                     pD3DCreateParams->DeviceType,
                     pD3DCreateParams->hFocusWindow,
@@ -1652,7 +1653,7 @@ CD3DDeviceManager::CreateNewDevice(
                     rgPresentParams,
                     NULL, // fullscreen display mode
                     &pID3DDeviceEx
-                    ));
+                    )));
                 if (SUCCEEDED(hr))
                 {
                     hr = pID3DDeviceEx->QueryInterface(IID_IDirect3DDevice9, (void**)&pID3DDevice);
@@ -1661,14 +1662,14 @@ CD3DDeviceManager::CreateNewDevice(
             }
             else
             {
-                MIL_THR(m_pID3D->CreateDevice(
+                MIL_THR(WheelPacingDeviceResult(m_pID3D->CreateDevice(
                     pD3DCreateParams->AdapterOrdinal,
                     pD3DCreateParams->DeviceType,
                     pD3DCreateParams->hFocusWindow,
                     pD3DCreateParams->BehaviorFlags,
                     rgPresentParams,
                     &pID3DDevice
-                    ));
+                    )));
             }
         }
 

@@ -10,6 +10,16 @@ namespace System.Windows.Media
 {
     public abstract class CompositionTarget : DispatcherObject, IDisposable, ICompositionTarget
     {
+        // 实验：只通知已完成布局/绘制记录的矢量树，不产生 CPU 像素。
+        internal static event EventHandler GpuSceneCompiled;
+        private static readonly bool s_measureTrial = Environment.GetEnvironmentVariable("QUICKER_GPU_ACCOUNTING") == "1";
+        private static long s_renderCalls, s_precomputeCalls, s_precomputeTicks, s_compileCalls, s_compileTicks;
+        internal static long[] ReadDiagnosticCounters() => new long[] { s_renderCalls, s_precomputeCalls, s_precomputeTicks, s_compileCalls, s_compileTicks, System.Diagnostics.Stopwatch.Frequency };
+        // [DEBUG-wpf-uw] UI线程内累计，不逐帧写文件。
+        internal static readonly bool PacingCountersEnabled = Environment.GetEnvironmentVariable("QUICKER_GPU_PACING_COUNTERS") == "1";
+        internal static long PacingNotify, PacingNoPresent, PacingDwm, PacingUnsupported, PacingTimer, PacingTicks;
+        internal static long[] ReadPacingCounters() => new long[] { 1, PacingNotify, PacingNoPresent, PacingDwm, PacingUnsupported, PacingTimer, PacingTicks, System.Diagnostics.Stopwatch.Frequency };
+        private static readonly bool s_gpuSceneTrial = Environment.GetEnvironmentVariable("QUICKER_WPF_GPU_SCENE") == "1";
         //
         // Data types for communicating state information between
         // CompositionTarget and its host.
@@ -254,6 +264,7 @@ namespace System.Windows.Media
         /// </summary>
         void ICompositionTarget.Render(bool inResize, DUCE.Channel channel)
         {
+            if (s_measureTrial) s_renderCalls++;
 #if DEBUG_CLR_MEM
             bool clrTracingEnabled = false;
 
@@ -288,7 +299,9 @@ namespace System.Windows.Media
                 _precomputeRateTimer.Begin();
 #endif
                 // precompute is channel agnostic
+                long precomputeBegin = s_measureTrial ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 _rootVisual.Precompute();
+                if (s_measureTrial) { s_precomputeCalls++; s_precomputeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - precomputeBegin; }
 
 #if MEDIA_PERFORMANCE_COUNTERS
                 _precomputeRateTimer.End();
@@ -313,7 +326,10 @@ namespace System.Windows.Media
                 _renderRateTimer.Begin();
 #endif
 
+                long compileBegin = s_measureTrial ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 Compile(channel);
+                if (s_measureTrial) { s_compileCalls++; s_compileTicks += System.Diagnostics.Stopwatch.GetTimestamp() - compileBegin; }
+                if (s_gpuSceneTrial) GpuSceneCompiled?.Invoke(this, EventArgs.Empty);
 
 #if MEDIA_PERFORMANCE_COUNTERS
                 _renderRateTimer.End();

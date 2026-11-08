@@ -989,7 +989,16 @@ CDisplaySet::Init()
     // Get IDirect3D9 and IDirect3D9Ex objects and keep HRESULT.
     // Failure here is not fatal.
     //
-    m_hrD3DInitialization = CD3DModuleLoader::CreateD3DObjects(&m_pID3D, &m_pID3DEx);
+    // GPU scene trial renders legacy targets in software. Reuse the existing
+    // no-D3D display enumeration path instead of opening an unused D3D9 driver.
+    // Both switches are required; normal WPF keeps its original behavior.
+    WCHAR gpuScene[4] = {}, skipProbe[4] = {};
+    const bool skipLegacyProbe =
+        GetEnvironmentVariableW(L"QUICKER_WPF_GPU_SCENE", gpuScene, ARRAYSIZE(gpuScene)) == 1 && gpuScene[0] == L'1' &&
+        GetEnvironmentVariableW(L"QUICKER_WPF_SKIP_D3D9_PROBE", skipProbe, ARRAYSIZE(skipProbe)) == 1 && skipProbe[0] == L'1';
+    m_hrD3DInitialization = skipLegacyProbe
+        ? D3DERR_NOTAVAILABLE
+        : CD3DModuleLoader::CreateD3DObjects(&m_pID3D, &m_pID3DEx);
 
     Assert(FAILED(m_hrD3DInitialization) == (m_pID3D == NULL));
 

@@ -1,4 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
+﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
@@ -21,6 +21,30 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../../common/quicker-wheel-counters.h"
+
+// Opt-in presentation slice: WPF software raster + D3D11/DirectComposition.
+// No legacy present fallback is permitted when this switch is requested.
+static bool IsD3D11PresentTrial()
+{
+    WCHAR value[8] = {};
+    return GetEnvironmentVariableW(L"QUICKER_WPF_D3D11_PRESENT", value, ARRAYSIZE(value)) == 1 && value[0] == L'1';
+}
+typedef HRESULT (__cdecl *TrialPresentFn)(HWND, UINT, UINT, const BYTE*, UINT, BYTE);
+typedef void (__cdecl *TrialReleaseFn)(HWND);
+static HMODULE LoadD3D11Presenter()
+{
+    HMODULE loaded = GetModuleHandleW(L"Quicker.WpfD3D11Presenter.dll");
+    if (loaded) return loaded;
+    WCHAR path[MAX_PATH] = {};
+    HMODULE self = GetModuleHandleW(L"wpfgfx_cor3.dll");
+    if (!self || !GetModuleFileNameW(self, path, ARRAYSIZE(path))) return NULL;
+    WCHAR* file = wcsrchr(path, L'\\');
+    if (!file) return NULL;
+    if (FAILED(StringCchCopyW(file + 1, ARRAYSIZE(path) - (file + 1 - path), L"Quicker.WpfD3D11Presenter.dll"))) return NULL;
+    return LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+}
+
 
 MtDefine(CSwPresenter32bppGDI, MILRender, "CSwPresenter32bppGDI");
 MtDefine(MSwBackBuffer, MILRawMemory, "MSwBackBuffer");
@@ -159,6 +183,13 @@ CSwPresenter32bppGDI::CSwPresenter32bppGDI(
 
 CSwPresenter32bppGDI::~CSwPresenter32bppGDI()
 {
+    if (IsD3D11PresentTrial())
+    {
+        HMODULE module = GetModuleHandleW(L"Quicker.WpfD3D11Presenter.dll");
+        TrialReleaseFn release = module ? reinterpret_cast<TrialReleaseFn>(GetProcAddress(module, "TrialRelease")) : NULL;
+        if (release) release(m_MILDC.GetHWND());
+    }
+
     Assert(!m_fLocked);
 
     FreeResources();
@@ -681,6 +712,16 @@ HRESULT CSwPresenter32bppGDI::Present(
 {
     HRESULT hr = S_OK;
 
+    if (IsD3D11PresentTrial() && m_eWindowLayerType == MilWindowLayerType::ApplicationManagedLayer)
+    {
+        if (m_RenderPixelFormat != MilPixelFormat::PBGRA32bpp) return E_NOTIMPL;
+        HMODULE module = LoadD3D11Presenter();
+        TrialPresentFn present = module ? reinterpret_cast<TrialPresentFn>(GetProcAddress(module, "TrialPresent")) : NULL;
+        if (!present) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+        return present(m_MILDC.GetHWND(), m_nWidth, m_nHeight,
+            static_cast<const BYTE*>(m_pvRenderBits), m_nBufferStride, m_MILDC.GetBlendFunction().SourceConstantAlpha);
+    }
+
     Assert(prcSource->left == prcDest->left);
     Assert(prcSource->top  == prcDest->top);
 
@@ -783,6 +824,7 @@ HRESULT CSwPresenter32bppGDI::Present(
             &m_MILDC.GetBlendFunction(),
             m_MILDC.GetULWFlags(),
             prcSource);
+        WheelRecordSubmit(m_MILDC.GetHWND(), hr, 3);
         if (hr == HRESULT_FROM_WIN32(ERROR_GEN_FAILURE))
         {
             // This could be because sz is different from the size of the

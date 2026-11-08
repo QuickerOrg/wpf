@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 // Description:
@@ -4904,10 +4904,14 @@ namespace System.Windows.Media
         /// or multiple flags on all channels this visual is
         /// marshaled to.
         /// </summary>
+        // 私有 GPU 切片仅在订阅时接收脏通知；普通 WPF 不分配场景数据。
+        internal static event Action<Visual> GpuSceneChanged;
+
         internal void SetFlagsOnAllChannels(
             bool value,
             VisualProxyFlags flagsToChange)
         {
+            if (value) GpuSceneChanged?.Invoke(this);
             _proxy.SetFlagsOnAllChannels(
                 value,
                 flagsToChange);
@@ -5191,6 +5195,7 @@ namespace System.Windows.Media
             VisualFlags flags,
             VisualProxyFlags proxyFlags)
         {
+            if (e != null) GpuSceneChanged?.Invoke(e);
             while ((e != null) &&
                    (!e.CheckFlagsAnd(flags) || !e.CheckFlagsOnAllChannels(proxyFlags)))
             {

@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Threading;
@@ -695,6 +695,13 @@ namespace System.Windows.Media
             int displayRefreshRate
             )
         {
+            if (CompositionTarget.PacingCountersEnabled)
+            {
+                CompositionTarget.PacingNotify++;
+                if(presentationResults == MIL_PRESENTATION_RESULTS.MIL_PRESENTATION_NOPRESENT) CompositionTarget.PacingNoPresent++;
+                if(presentationResults == MIL_PRESENTATION_RESULTS.MIL_PRESENTATION_DWM) CompositionTarget.PacingDwm++;
+                if(presentationResults == MIL_PRESENTATION_RESULTS.MIL_PRESENTATION_VSYNC_UNSUPPORTED) CompositionTarget.PacingUnsupported++;
+            }
             if (InterlockIsEnabled)
             {
                 Debug.Assert(_interlockState == InterlockState.WaitingForResponse,
@@ -1760,6 +1767,7 @@ namespace System.Windows.Media
             object resizedCompositionTarget /* can be null if we are not resizing*/
             )
         {
+            if(CompositionTarget.PacingCountersEnabled) CompositionTarget.PacingTicks++;
             // if the media system is disconnected bail.
             if (Channel == null)
             {
@@ -2505,6 +2513,7 @@ namespace System.Windows.Media
 
         private void EstimatedNextVSyncTimeExpired(object sender, EventArgs e)
         {
+            if(CompositionTarget.PacingCountersEnabled) CompositionTarget.PacingTimer++;
             Debug.Assert(_interlockState == InterlockState.WaitingForNextFrame
                          && _lastPresentationResults == MIL_PRESENTATION_RESULTS.MIL_PRESENTATION_NOPRESENT,
                 "CommitRenderChannel timer should only be trigger while waiting for the frame to expire");
