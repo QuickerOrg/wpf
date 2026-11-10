@@ -131,7 +131,7 @@ private:
         
 private:
 
-    IDirect3DPixelShader9 *m_pD3DPixelShader; // D3D pixel shader. 
+    QkPixelShaderHandle *m_pD3DPixelShader; // D3D pixel shader.
 
 #if DBG
     CD3DDeviceLevel1 *m_pDbgDeviceNoRef;

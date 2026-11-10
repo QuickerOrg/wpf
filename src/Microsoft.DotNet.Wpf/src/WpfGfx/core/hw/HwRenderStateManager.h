@@ -246,7 +246,7 @@ public:
 
     MIL_FORCEINLINE HRESULT SetTextureInline(
         DWORD dwStage,
-        __in_ecount_opt(1) IDirect3DBaseTexture9 *pTexture
+        __in_ecount_opt(1) QkBaseTextureHandle *pTexture
         )
     {
         //
@@ -265,7 +265,7 @@ public:
     }
 
     MIL_FORCEINLINE HRESULT SetDepthStencilSurfaceInline(
-        __in_ecount_opt(1) IDirect3DSurface9 *pNewDepthSurface,
+        __in_ecount_opt(1) QkSurfaceHandle *pNewDepthSurface,
         UINT uWidth,
         UINT uHeight
         )
@@ -292,7 +292,7 @@ public:
         ) const;
 
     MIL_FORCEINLINE HRESULT ReleaseUseOfDepthStencilBuffer(
-        __in_ecount(1) IDirect3DSurface9 *pNewDepthSurface
+        __in_ecount(1) QkSurfaceHandle *pNewDepthSurface
         )
     {
         if (m_depthStencilSurface.IsStateSet(0,pNewDepthSurface))
@@ -379,7 +379,7 @@ public:
     }
 
     HRESULT SetPixelShaderInline(
-        __in_ecount_opt(1) IDirect3DPixelShader9 *pPixelShader
+        __in_ecount_opt(1) QkPixelShaderHandle *pPixelShader
         )
     {
         //
@@ -397,7 +397,7 @@ public:
     }
 
     HRESULT SetVertexShaderInline(
-        __in_ecount_opt(1) IDirect3DVertexShader9 *pVertexShader
+        __in_ecount_opt(1) QkVertexShaderHandle *pVertexShader
         )
     {
         //
@@ -605,15 +605,15 @@ private:
     //
     HRESULT ForceSetTexture(
         DWORD dwStage,
-        __in_ecount_opt(1) IDirect3DBaseTexture9 *pTexture
+        __in_ecount_opt(1) QkBaseTextureHandle *pTexture
         );
 
     HRESULT ForceSetVertexShader(
-        __in_ecount_opt(1) IDirect3DVertexShader9 *pVertexShader
+        __in_ecount_opt(1) QkVertexShaderHandle *pVertexShader
         );
 
     HRESULT ForceSetPixelShader(
-        __in_ecount_opt(1) IDirect3DPixelShader9 *pPixelShader
+        __in_ecount_opt(1) QkPixelShaderHandle *pPixelShader
         );
 
     HRESULT ForceSetVertexShaderConstantF(
@@ -645,7 +645,7 @@ private:
         );
 
     HRESULT ForceSetDepthStencilSurface(
-        __in_ecount_opt(1) IDirect3DSurface9 *pDepthStencilSurface,
+        __in_ecount_opt(1) QkSurfaceHandle *pDepthStencilSurface,
         UINT uWidth,
         UINT uHeight
         );
@@ -743,8 +743,8 @@ private:
     //
     // Shaders
     //
-    CStateTable<IDirect3DVertexShader9 *> m_stateVertexShader;
-    CStateTable<IDirect3DPixelShader9 *> m_statePixelShader;
+    CStateTable<QkVertexShaderHandle *> m_stateVertexShader;
+    CStateTable<QkPixelShaderHandle *> m_statePixelShader;
 
     // Shader constants (float4 only)
     CStateTable<dxlayer::vector4> m_stateVertexShaderFloat4Constants;
@@ -763,9 +763,9 @@ private:
     //
     // Textures
     //
-    CStateTable<IDirect3DBaseTexture9 *> m_textures;
+    CStateTable<QkBaseTextureHandle *> m_textures;
 
-    CStateTable<IDirect3DSurface9 *> m_depthStencilSurface;
+    CStateTable<QkSurfaceHandle *> m_depthStencilSurface;
 
     UINT m_uDepthStencilSurfaceWidth;
     UINT m_uDepthStencilSurfaceHeight;

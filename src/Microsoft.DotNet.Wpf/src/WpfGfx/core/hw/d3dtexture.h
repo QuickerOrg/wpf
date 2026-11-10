@@ -29,7 +29,7 @@ public:
         ) const;
 
     void GetD3DBaseTexture(
-        __deref_out_ecount(1) IDirect3DBaseTexture9 **ppd3dBaseTexture
+        __deref_out_ecount(1) QkBaseTextureHandle **ppd3dBaseTexture
         )
     {
         Assert(IsValid());
@@ -39,7 +39,7 @@ public:
         (*ppd3dBaseTexture)->AddRef();
     }
 
-    __out_ecount(1) IDirect3DTexture9 *GetD3DTextureNoRef() const
+    __out_ecount(1) QkTextureHandle *GetD3DTextureNoRef() const
     {
         Assert(IsValid());
         Assert(m_pD3DTexture);
@@ -58,10 +58,10 @@ public:
 
     HRESULT GetID3DSurfaceLevel(
         UINT uLevel,
-        __deref_out_ecount(1) IDirect3DSurface9 **ppd3dSurfaceLevel
+        __deref_out_ecount(1) QkSurfaceHandle **ppd3dSurfaceLevel
         ) const
     {
-        IDirect3DTexture9 *pD3DTextureNoRef = GetD3DTextureNoRef();
+        QkTextureHandle *pD3DTextureNoRef = GetD3DTextureNoRef();
 
         Assert(pD3DTextureNoRef);
 
@@ -84,12 +84,12 @@ protected:
 
     HRESULT Init(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+        __inout_ecount(1) QkTextureHandle *pD3DTexture
         );
 
     HRESULT InitResource(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+        __inout_ecount(1) QkTextureHandle *pD3DTexture
         );
 
 private:
@@ -103,7 +103,7 @@ private:
     
 protected:
 
-    IDirect3DTexture9 *m_pD3DTexture;
+    QkTextureHandle *m_pD3DTexture;
     D3DSURFACE_DESC m_sdLevel0;
 
 private:

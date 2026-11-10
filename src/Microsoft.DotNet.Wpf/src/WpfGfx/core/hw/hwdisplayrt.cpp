@@ -644,7 +644,7 @@ CHwDisplayRenderTarget::ShowSteppedRendering(
 
     rcPresentSource = rcPresentDest;
 
-    IDirect3DSurface9 *pID3DLockableSurface = NULL;
+    QkSurfaceHandle *pID3DLockableSurface = NULL;
     CD3DSurface *pD3DSurface = NULL;
     RECT rcCopySrc;
     bool fShrink = false;

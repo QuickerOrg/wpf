@@ -701,12 +701,12 @@ CHwDestinationTexture::DbgSetContentsInvalid(
 {
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pDestSurface = NULL;
+    QkSurfaceHandle *pDestSurface = NULL;
 
 
     // get the destination surface
     {
-        IDirect3DTexture9 *pDestTextureNoRef = m_pBackgroundTexture->GetD3DTextureNoRef();
+        QkTextureHandle *pDestTextureNoRef = m_pBackgroundTexture->GetD3DTextureNoRef();
     
         IFC(pDestTextureNoRef->GetSurfaceLevel(
             0,

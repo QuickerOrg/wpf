@@ -1,5 +1,11 @@
 #pragma once
 #include "../glyph/quicker-text-trace.h"
+#if QUICKER_WPF_D3D11_FACADE
+inline void QkCaptureEffectInput(QkTextureHandle*) {}
+inline void QkTraceEffectDraw(QkTextureHandle*) {}
+#else
+#pragma once
+#include "../glyph/quicker-text-trace.h"
 inline void QkCaptureEffectInput(IDirect3DTexture9* texture){
  WCHAR root[1024]{};if(!GetEnvironmentVariableW(L"QUICKER_G0C_TEXT_TRACE",root,1024))return;
  IDirect3DDevice9* device=nullptr;IDirect3DSurface9* surface=nullptr;IDirect3DSurface9* read=nullptr;
@@ -10,3 +16,5 @@ inline void QkCaptureEffectInput(IDirect3DTexture9* texture){
 inline void QkTraceEffectDraw(IDirect3DTexture9* texture){
  WCHAR path[1024]{};if(!GetEnvironmentVariableW(L"QUICKER_G0C_TEXT_TRACE",path,1024))return;IDirect3DDevice9* device=nullptr;if(FAILED(texture->GetDevice(&device)))return;D3DVIEWPORT9 vp{};if(SUCCEEDED(device->GetViewport(&vp))){float v[]={float(vp.X),float(vp.Y),float(vp.Width),float(vp.Height),0,0};QkTraceTextState("old-draw-viewport",0,0,false,v);}for(UINT i=0;i<4;i++){float v[6]{};if(SUCCEEDED(device->GetVertexShaderConstantF(i,v,1)))QkTraceTextState("old-draw-vs",i,0,false,v);}device->Release();
 }
+
+#endif

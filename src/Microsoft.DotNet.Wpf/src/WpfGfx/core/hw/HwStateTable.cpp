@@ -25,14 +25,16 @@ MtDefine(StateTableMemory, MILRawMemory, "StateTableMemory");
 
 // Explicit template instantiation
 
-template class CStateTable<IDirect3DBaseTexture9 *>;
+template class CStateTable<QkBaseTextureHandle *>;
 
-template class CStateTable<IDirect3DVertexShader9 *>;
-template class CStateTable<IDirect3DPixelShader9 *>;
+template class CStateTable<QkVertexShaderHandle *>;
+#if !QUICKER_WPF_D3D11_FACADE
+template class CStateTable<QkPixelShaderHandle *>;
+#endif
 
 template class CStateTable<QkIndexBufferHandle *>;
 template class CStateTable<QkVertexBufferHandle *>;
-template class CStateTable<IDirect3DSurface9 *>;
+template class CStateTable<QkSurfaceHandle *>;
 
 
 

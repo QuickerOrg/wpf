@@ -29,7 +29,7 @@ MtDefine(D3DResource_TextureSurface, MILHwMetrics, "Approximate surface sizes");
 HRESULT 
 CD3DTextureSurface::Create(
     __inout_ecount(1) CD3DResourceManager *pResourceManager,
-    __inout_ecount(1) IDirect3DSurface9 *pID3DSurface,
+    __inout_ecount(1) QkSurfaceHandle *pID3DSurface,
     __deref_out_ecount(1) CD3DSurface **ppSurface
     )
 {
@@ -70,7 +70,7 @@ Cleanup:
 //
 //-------------------------------------------------------------------------
 CD3DTextureSurface::CD3DTextureSurface(
-    __inout_ecount(1) IDirect3DSurface9 * const pD3DSurface
+    __inout_ecount(1) QkSurfaceHandle * const pD3DSurface
     )
     : CD3DSurface(pD3DSurface)
 {
@@ -95,6 +95,9 @@ CD3DTextureSurface::Init(
     //
 
     IFC(m_pD3DSurface->GetDesc(&m_d3dsd));
+#if QUICKER_WPF_D3D11_FACADE
+    m_facadeTexture=m_pD3DSurface->texture; m_facadeRTV=m_pD3DSurface->rtv; m_facadeGeneration=m_pD3DSurface->generation;
+#endif
 
     //
     // Init the base class, use a zero size because texture wrapper will
@@ -126,8 +129,12 @@ CD3DTextureSurface::ReleaseD3DResources()
     Assert(!m_fResourceValid || (m_cRef == 0));
     Assert(IsValid() == m_fResourceValid);
 
+#if QUICKER_WPF_D3D11_FACADE
+    Device().ReleaseUseOfRenderTarget(this);
+    m_facadeRTV.Reset(); m_facadeTexture.Reset();
+#endif
     // This context is protected so it is safe to release the D3D resource
-    ReleaseInterface((*const_cast<IDirect3DSurface9 **>(&m_pD3DSurface)));
+    ReleaseInterface((*const_cast<QkSurfaceHandle **>(&m_pD3DSurface)));
 
     return;
 }

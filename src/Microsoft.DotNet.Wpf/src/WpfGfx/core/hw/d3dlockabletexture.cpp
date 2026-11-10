@@ -41,7 +41,7 @@ MtDefine(D3DResource_LockableTexture, MILHwMetrics, "Approximate lockable textur
 HRESULT 
 CD3DLockableTexture::Create(
     __inout_ecount(1) CD3DResourceManager *pResourceManager, 
-    __in_ecount(1) IDirect3DTexture9 *pD3DTexture,
+    __in_ecount(1) QkTextureHandle *pD3DTexture,
     __deref_out_ecount(1) CD3DLockableTexture **ppLockableTexture)
 {
     HRESULT hr = S_OK;
@@ -110,7 +110,7 @@ CD3DLockableTexture::~CD3DLockableTexture()
 HRESULT 
 CD3DLockableTexture::Init(
     __inout_ecount(1) CD3DResourceManager *pResourceManager,
-    __in_ecount(1) IDirect3DTexture9 *pD3DTexture
+    __in_ecount(1) QkTextureHandle *pD3DTexture
     )
 {
     HRESULT hr = S_OK;
@@ -132,7 +132,7 @@ Cleanup:
 //      CD3DLockableTexture::LockRect
 //
 //  Synopsis:
-//      Delegate to IDirect3DTexture9::LockRect
+//      Delegate to QkTextureHandle::LockRect
 //
 //------------------------------------------------------------------------------
 HRESULT 
@@ -159,7 +159,7 @@ Cleanup:
 //      CD3DLockableTexture::UnlockRect
 //
 //  Synopsis:
-//      Delegate to IDirect3DTexture9::UnlockRect
+//      Delegate to QkTextureHandle::UnlockRect
 //
 //------------------------------------------------------------------------------
 HRESULT 
@@ -179,7 +179,7 @@ Cleanup:
 //      CD3DLockableTexture::AddDirtyRect
 //
 //  Synopsis:
-//      Delegate to IDirect3DTexture9::AddDirtyRect
+//      Delegate to QkTextureHandle::AddDirtyRect
 //
 //------------------------------------------------------------------------------
 HRESULT 

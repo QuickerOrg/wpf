@@ -41,7 +41,7 @@ struct VertexFillData
     float kxWT, kyWT, dxWT, dyWT;
 
     // mask texture container
-    IDirect3DTexture9* pMaskTexture;
+    QkTextureHandle* pMaskTexture;
 
     // offsets in texture space corresponding to shift by 1/3 pixel
     // along X-coordinate in render space

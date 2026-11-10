@@ -1,4 +1,14 @@
 #pragma once
+#if QUICKER_WPF_D3D11_FACADE
+inline void QkTraceTextState(const char*,DWORD,UINT,bool,const float*) {}
+inline void QkTraceGpuText(QkTextureHandle*) {}
+inline DWORD QkTextRawBegin(QkTextureHandle*) { return MAXDWORD; }
+inline void QkTextRawEnd(QkTextureHandle*,DWORD) {}
+struct QkTextSampleState { HRESULT hr=S_OK; };
+inline QkTextSampleState QkTextSampleBegin(QkTextureHandle*) { return {}; }
+inline void QkTextSampleEnd(QkTextureHandle*,QkTextSampleState&) {}
+#else
+#pragma once
 inline void QkTraceTextState(const char* role,DWORD color,UINT gamma,bool clearType,const float* matrix){
  WCHAR path[1024]{};if(!GetEnvironmentVariableW(L"QUICKER_G0C_TEXT_TRACE",path,1024))return;
  char line[512];int n=_snprintf_s(line,sizeof line,_TRUNCATE,"%s,%08lx,%u,%u,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\r\n",role,color,gamma,clearType?1:0,matrix?matrix[0]:0,matrix?matrix[1]:0,matrix?matrix[2]:0,matrix?matrix[3]:0,matrix?matrix[4]:0,matrix?matrix[5]:0);
@@ -42,3 +52,5 @@ inline QkTextSampleState QkTextSampleBegin(IDirect3DTexture9* texture){
 inline void QkTextSampleEnd(IDirect3DTexture9* texture,QkTextSampleState& state){
  if(!state.old&&!state.point)return;IDirect3DDevice9* dev=nullptr;if(SUCCEEDED(texture->GetDevice(&dev))){if(state.old)dev->SetPixelShader(state.old);if(state.point){dev->SetSamplerState(0,D3DSAMP_MINFILTER,state.minFilter);dev->SetSamplerState(0,D3DSAMP_MAGFILTER,state.magFilter);}dev->Release();}if(state.old)state.old->Release();
 }
+
+#endif

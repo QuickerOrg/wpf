@@ -21,13 +21,13 @@
 
 
 HRESULT CacheHwTextureOnBitmap(
-    __inout_ecount(1) IDirect3DTexture9 *pITexture,
+    __inout_ecount(1) QkTextureHandle *pITexture,
     __inout_ecount(1) IWGXBitmap *pBitmap,
     __inout_ecount(1) CD3DDeviceLevel1 *pDevice
     );
 
 HRESULT ReadRenderTargetIntoSysMemBuffer(
-    __in IDirect3DSurface9 *pSourceSurface,
+    __in QkSurfaceHandle *pSourceSurface,
     __in const CMilRectU &rcCopy,
     MilPixelFormat::Enum fmtOut,
     UINT uStrideOut,

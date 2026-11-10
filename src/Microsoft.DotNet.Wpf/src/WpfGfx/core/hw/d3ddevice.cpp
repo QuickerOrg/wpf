@@ -330,7 +330,10 @@ CD3DDeviceLevel1::Init(
     m_pCachedAnisoFilterMode=&CD3DRenderState::sc_fmLinear;
     m_fmtSupportFor32bppBGR=MilPixelFormat::BGR32bpp; m_fmtSupportFor32bppPBGRA=MilPixelFormat::PBGRA32bpp;
     m_multisampleTypeFor32bppBGR=m_multisampleTypeFor32bppPBGRA=D3DMULTISAMPLE_NONE;
-    m_fSupportsD3DFMT_A8=m_fSupportsD3DFMT_L8=m_fSupportsD3DFMT_P8=false;
+    UINT support=0;
+    m_fSupportsD3DFMT_A8=SUCCEEDED(m_facade->device->CheckFormatSupport(DXGI_FORMAT_A8_UNORM,&support)) && (support&D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+    m_fSupportsD3DFMT_L8=SUCCEEDED(m_facade->device->CheckFormatSupport(DXGI_FORMAT_R8_UNORM,&support)) && (support&D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+    m_fSupportsD3DFMT_P8=false;
     m_RenderTargetTestStatusX8R8G8B8.hrTest=m_RenderTargetTestStatusX8R8G8B8.hrTestGetDC=S_OK;
     m_RenderTargetTestStatusA8R8G8B8.hrTest=m_RenderTargetTestStatusA8R8G8B8.hrTestGetDC=S_OK;
     m_RenderTargetTestStatusA2R10G10B10.hrTest=m_RenderTargetTestStatusA2R10G10B10.hrTestGetDC=E_NOTIMPL;
@@ -1895,7 +1898,7 @@ CD3DDeviceLevel1::CreateRenderTarget(
 #else
 
     HRESULT hr = S_OK;
-    IDirect3DSurface9 *pID3DSurface = NULL;
+    QkSurfaceHandle *pID3DSurface = NULL;
 
     IFC(CreateRenderTargetUntracked(
         uiWidth,
@@ -1937,7 +1940,7 @@ CD3DDeviceLevel1::CreateRenderTargetUntracked(
     D3DMULTISAMPLE_TYPE d3dMultiSampleType,
     DWORD dwMultisampleQuality,
     bool fLockable,
-    __deref_out_ecount(1) IDirect3DSurface9 ** const ppD3DSurface
+    __deref_out_ecount(1) QkSurfaceHandle ** const ppD3DSurface
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -1946,7 +1949,7 @@ CD3DDeviceLevel1::CreateRenderTargetUntracked(
 
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pID3DSurface = NULL;
+    QkSurfaceHandle *pID3DSurface = NULL;
 
     *ppD3DSurface = NULL;
 
@@ -1998,8 +2001,8 @@ Cleanup:
 //------------------------------------------------------------------------------
 HRESULT
 CD3DDeviceLevel1::GetRenderTargetData(
-    __in_ecount(1) IDirect3DSurface9 *pSourceSurface,
-    __in_ecount(1) IDirect3DSurface9 *pDestinationSurface
+    __in_ecount(1) QkSurfaceHandle *pSourceSurface,
+    __in_ecount(1) QkSurfaceHandle *pDestinationSurface
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -2253,8 +2256,8 @@ CD3DDeviceLevel1::CreateIndexBuffer(
 //------------------------------------------------------------------------------
 HRESULT
 CD3DDeviceLevel1::ComposeRects(
-        __in_ecount(1) IDirect3DSurface9* pSource,
-        __inout_ecount(1) IDirect3DSurface9* pDestination,
+        __in_ecount(1) QkSurfaceHandle* pSource,
+        __inout_ecount(1) QkSurfaceHandle* pDestination,
         __in_ecount(1) QkVertexBufferHandle* pSrcRectDescriptors,
         UINT NumRects,
         __in_ecount(1) QkVertexBufferHandle* pDstRectDescriptors,
@@ -2306,12 +2309,14 @@ HRESULT
 CD3DDeviceLevel1::CreateTexture(
     __in_ecount(1) const D3DSURFACE_DESC *pSurfDesc,
     UINT uLevels,
-    __deref_out_ecount(1) IDirect3DTexture9 ** const ppD3DTexture,
+    __deref_out_ecount(1) QkTextureHandle ** const ppD3DTexture,
     __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateTexture");
+    if(pSharedHandle) return QkFacadeUnimpl("CreateTexture.shared");
+    if(m_fDeviceLostProcessed) return WGXERR_DISPLAYSTATEINVALID;
+    return m_facade->CreateTexture(pSurfDesc,uLevels,ppD3DTexture);
 #else
 
     AssertDeviceEntry(*this);
@@ -2422,13 +2427,17 @@ CD3DDeviceLevel1::CreateLockableTexture(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateLockableTexture");
+    QkTextureHandle *texture=nullptr;
+    HRESULT hr=m_facade->CreateTexture(pSurfDesc,(pSurfDesc->Usage&D3DUSAGE_AUTOGENMIPMAP)?0:1,&texture);
+    *ppLockableTexture=nullptr;
+    if(SUCCEEDED(hr)) hr=CD3DLockableTexture::Create(&m_resourceManager,texture,ppLockableTexture);
+    ReleaseInterface(texture); return hr;
 #else
 
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
-    IDirect3DTexture9 *pD3DTexture = NULL;
+    QkTextureHandle *pD3DTexture = NULL;
     UINT uLevels = 1;
 
     Assert((pSurfDesc->Pool == m_ManagedPool) ||
@@ -2505,15 +2514,19 @@ CD3DDeviceLevel1::CreateSysMemUpdateSurface(
     UINT uHeight,
     D3DFORMAT fmtTexture,
     __in_xcount_opt(uWidth * uHeight * D3DFormatSize(fmtTexture)) void *pvPixels,
-    __deref_out_ecount(1) IDirect3DSurface9 ** const ppD3DSysMemSurface
+    __deref_out_ecount(1) QkSurfaceHandle ** const ppD3DSysMemSurface
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateSysMemUpdateSurface");
+    D3DSURFACE_DESC desc={};desc.Width=uWidth;desc.Height=uHeight;desc.Format=fmtTexture;desc.Pool=D3DPOOL_SYSTEMMEM;
+    QkTextureHandle *texture=nullptr; *ppD3DSysMemSurface=nullptr;
+    HRESULT hr=m_facade->CreateTexture(&desc,1,&texture);
+    if(SUCCEEDED(hr)) { texture->levels[0]->reference=static_cast<BYTE*>(pvPixels); hr=texture->GetSurfaceLevel(0,ppD3DSysMemSurface); }
+    ReleaseInterface(texture); return hr;
 #else
 
     HRESULT hr = S_OK;
-    IDirect3DTexture9 *pD3DTexture = NULL;
+    QkTextureHandle *pD3DTexture = NULL;
 
     *ppD3DSysMemSurface = NULL;
 
@@ -2625,11 +2638,13 @@ CD3DDeviceLevel1::CreateSysMemReferenceTexture(
         pSurfDesc->Width * pSurfDesc->Height
         * D3DFormatSize(pSurfDesc->Format)
         ) void *pvPixels,
-    __deref_out_ecount(1) IDirect3DTexture9 ** const ppD3DSysMemTexture
+    __deref_out_ecount(1) QkTextureHandle ** const ppD3DSysMemTexture
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateSysMemReferenceTexture");
+    HRESULT hr=m_facade->CreateTexture(pSurfDesc,1,ppD3DSysMemTexture);
+    if(SUCCEEDED(hr)) (*ppD3DSysMemTexture)->levels[0]->reference=static_cast<BYTE*>(pvPixels);
+    return hr;
 #else
 
     HRESULT hr = S_OK;
@@ -2689,14 +2704,17 @@ CD3DDeviceLevel1::CreateSysMemReferenceTexture(
 //------------------------------------------------------------------------------
 HRESULT
 CD3DDeviceLevel1::UpdateSurface(
-    __in_ecount(1) IDirect3DSurface9 *pD3DSysMemSrcSurface,
+    __in_ecount(1) QkSurfaceHandle *pD3DSysMemSrcSurface,
     __in_ecount_opt(1) const RECT *pSourceRect,
-    __inout_ecount(1) IDirect3DSurface9 *pD3DPoolDefaultDestSurface,
+    __inout_ecount(1) QkSurfaceHandle *pD3DPoolDefaultDestSurface,
     __in_ecount_opt(1) const POINT *pDestPoint
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::UpdateSurface");
+    D3DSURFACE_DESC d=pD3DSysMemSrcSurface->desc;
+    RECT src=pSourceRect?*pSourceRect:RECT{0,0,static_cast<LONG>(d.Width),static_cast<LONG>(d.Height)};
+    POINT pt=pDestPoint?*pDestPoint:POINT{0,0}; RECT dst={pt.x,pt.y,pt.x+src.right-src.left,pt.y+src.bottom-src.top};
+    return m_facade->Copy(pD3DSysMemSrcSurface,&src,pD3DPoolDefaultDestSurface,&dst,D3DTEXF_NONE);
 #else
 
     HRESULT hr = S_OK;
@@ -2729,12 +2747,19 @@ Cleanup:
 //
 //------------------------------------------------------------------------------
 HRESULT CD3DDeviceLevel1::UpdateTexture(
-    __in_ecount(1) IDirect3DTexture9 *pD3DSysMemSrcTexture,
-    __inout_ecount(1) IDirect3DTexture9 *pD3DPoolDefaultDestTexture
+    __in_ecount(1) QkTextureHandle *pD3DSysMemSrcTexture,
+    __inout_ecount(1) QkTextureHandle *pD3DPoolDefaultDestTexture
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::UpdateTexture");
+    if(pD3DSysMemSrcTexture->GetLevelCount()!=pD3DPoolDefaultDestTexture->GetLevelCount() &&
+       !(pD3DSysMemSrcTexture->GetLevelCount()==1 && (pD3DPoolDefaultDestTexture->levels[0]->desc.Usage&D3DUSAGE_AUTOGENMIPMAP))) return E_INVALIDARG;
+    for(UINT i=0;i<pD3DSysMemSrcTexture->GetLevelCount();++i) {
+        HRESULT hr=m_facade->Copy(pD3DSysMemSrcTexture->levels[i],nullptr,pD3DPoolDefaultDestTexture->levels[i],nullptr,D3DTEXF_NONE);
+        if(FAILED(hr)) return hr;
+    }
+    if(pD3DPoolDefaultDestTexture->levels[0]->desc.Usage&D3DUSAGE_AUTOGENMIPMAP) pD3DPoolDefaultDestTexture->GenerateMipSubLevels();
+    return S_OK;
 #else
 
     HRESULT hr = S_OK;
@@ -2765,13 +2790,13 @@ Cleanup:
 HRESULT CD3DDeviceLevel1::StretchRect(
     __in_ecount(1) CD3DSurface *pSourceSurface,
     __in_ecount_opt(1) const RECT *pSourceRect,
-    __inout_ecount(1) IDirect3DSurface9 *pDestSurface,
+    __inout_ecount(1) QkSurfaceHandle *pDestSurface,
     __in_ecount_opt(1) const RECT *pDestRect,
     D3DTEXTUREFILTERTYPE Filter
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::StretchRect");
+    return m_facade->Copy(pSourceSurface->ID3DSurface(),pSourceRect,pDestSurface,pDestRect,Filter);
 #else
 
     HRESULT hr = S_OK;
@@ -3072,7 +3097,11 @@ CD3DDeviceLevel1::ReleaseUseOfRenderTarget(
             IGNORE_HR(EndScene());
         }
 
+#if QUICKER_WPF_D3D11_FACADE
+        m_facade->target.Reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr);
+#else
         IGNORE_HR(m_pD3DDevice->SetRenderTarget(0, m_pD3DDummyBackBuffer));
+#endif
 
         ReleaseUseOfDepthStencilSurface(m_pDepthStencilBufferForCurrentRTNoRef);
 
@@ -3206,13 +3235,18 @@ Cleanup:
 //------------------------------------------------------------------------------
 HRESULT
 CD3DDeviceLevel1::ColorFill(
-    __inout_ecount(1) IDirect3DSurface9 *pSurface,
+    __inout_ecount(1) QkSurfaceHandle *pSurface,
     __in_ecount_opt(1) const RECT *pRect,
     D3DCOLOR color
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::ColorFill");
+    if(!pSurface || !pSurface->rtv) return E_INVALIDARG;
+    auto target=m_facade->target; UINT w=m_facade->width,h=m_facade->height;
+    HRESULT hr=m_facade->BindTarget(pSurface->rtv.Get(),pSurface->desc.Width,pSurface->desc.Height);
+    D3DRECT rect; if(pRect) rect={pRect->left,pRect->top,pRect->right,pRect->bottom};
+    if(SUCCEEDED(hr)) hr=m_facade->Clear(D3DCLEAR_TARGET,color,pRect?1:0,pRect?&rect:nullptr);
+    m_facade->BindTarget(target.Get(),w,h); return hr;
 #else
 
     {
@@ -3612,7 +3646,11 @@ CD3DDeviceLevel1::HandlePresentFailure(
     {
         m_pCurrentRenderTargetNoRef = NULL;
 
+#if QUICKER_WPF_D3D11_FACADE
+        m_facade->target.Reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr);
+#else
         IGNORE_HR(m_pD3DDevice->SetRenderTarget(0, m_pD3DDummyBackBuffer));
+#endif
 
         ReleaseUseOfDepthStencilSurface(m_pDepthStencilBufferForCurrentRTNoRef);
     }
@@ -3894,7 +3932,7 @@ CD3DDeviceLevel1::SetTexture(
     HRESULT hr = S_OK;
 
 
-    IDirect3DBaseTexture9 *pd3dBaseTextureNoRef = NULL;
+    QkBaseTextureHandle *pd3dBaseTextureNoRef = NULL;
 
     // 2/14/2003 chrisra - Changed the function so if a NULL texture
     // was passed in the stage would be set to NULL
@@ -3934,7 +3972,7 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::SetD3DTexture(
     DWORD dwTextureStage,
-    __in_ecount_opt(1) IDirect3DTexture9 *pD3DTexture
+    __in_ecount_opt(1) QkTextureHandle *pD3DTexture
     )
 {
     AssertDeviceEntry(*this);
@@ -4320,7 +4358,7 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::CreatePixelShaderFromResource(
     UINT uResourceId,
-    __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppPixelShader
+    __deref_out_ecount(1) QkPixelShaderHandle ** const ppPixelShader
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -4382,7 +4420,7 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::CreateVertexShaderFromResource(
     UINT uResourceId,
-    __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppVertexShader
+    __deref_out_ecount(1) QkVertexShaderHandle ** const ppVertexShader
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -4433,11 +4471,11 @@ HRESULT
 CD3DDeviceLevel1::CompilePipelineVertexShader(
     __in_bcount(cbHLSLSource) PCSTR pHLSLSource,
     UINT cbHLSLSource,
-    __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppVertexShader
+    __deref_out_ecount(1) QkVertexShaderHandle ** const ppVertexShader
 )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CompilePipelineVertexShader");
+    return m_facade->Compile(pHLSLSource,cbHLSLSource,true,ppVertexShader);
 #else
 
     MtSetDefault(Mt(D3DCompiler));
@@ -4484,11 +4522,11 @@ HRESULT
 CD3DDeviceLevel1::CompilePipelinePixelShader(
     __in_bcount(cbHLSLSource) PCSTR pHLSLSource,
     UINT cbHLSLSource,
-    __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppPixelShader
+    __deref_out_ecount(1) QkPixelShaderHandle ** const ppPixelShader
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CompilePipelinePixelShader");
+    return m_facade->Compile(pHLSLSource,cbHLSLSource,false,ppPixelShader);
 #else
 
     MtSetDefault(Mt(D3DCompiler));
@@ -4535,7 +4573,7 @@ CD3DDeviceLevel1::CompilePipelinePixelShader(
 HRESULT
 CD3DDeviceLevel1::CreateVertexShader(
     __in const DWORD *pdwfnVertexShader,
-    __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppOutShader
+    __deref_out_ecount(1) QkVertexShaderHandle ** const ppOutShader
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -4572,7 +4610,7 @@ CD3DDeviceLevel1::CreateVertexShader(
 HRESULT
 CD3DDeviceLevel1::CreatePixelShader(
     __in const DWORD *pdwfnPixelShader,
-    __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppOutShader
+    __deref_out_ecount(1) QkPixelShaderHandle ** const ppOutShader
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -5058,7 +5096,7 @@ CD3DDeviceLevel1::CreateDepthBuffer(
 #else
 
     HRESULT hr = S_OK;
-    IDirect3DSurface9* pD3DSurface = NULL;
+    QkSurfaceHandle* pD3DSurface = NULL;
 
 
     //   What depth buffer should be used
@@ -6005,8 +6043,8 @@ Cleanup:
 //------------------------------------------------------------------------------
 HRESULT
 CD3DDeviceLevel1::CopyD3DTexture(
-    __in_ecount(1) IDirect3DTexture9 *pD3DSourceTexture,
-    __inout_ecount(1) IDirect3DTexture9 *pD3DDestinationTexture
+    __in_ecount(1) QkTextureHandle *pD3DSourceTexture,
+    __inout_ecount(1) QkTextureHandle *pD3DDestinationTexture
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
@@ -6015,8 +6053,8 @@ CD3DDeviceLevel1::CopyD3DTexture(
 
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pD3DSurfaceSource      = NULL;
-    IDirect3DSurface9 *pD3DSurfaceDestination = NULL;
+    QkSurfaceHandle *pD3DSurfaceSource      = NULL;
+    QkSurfaceHandle *pD3DSurfaceDestination = NULL;
 
     IFC(pD3DSourceTexture->GetSurfaceLevel(0, &pD3DSurfaceSource));
     IFC(pD3DDestinationTexture->GetSurfaceLevel(0, &pD3DSurfaceDestination));
@@ -6936,7 +6974,7 @@ CD3DDeviceLevel1::PrepareShaderEffectPipeline(bool useVS30)
     // ATI cards.  ATI cards would fail to render ps_3_0 effects when using a vs_2_0 vertex shader.
     // Both vertex shaders are identical outside of the version number.
     // We still need a vs_2_0 version for machines with only shader model 2.0 support.
-    IDirect3DVertexShader9 *pVertexShader = NULL;
+    QkVertexShaderHandle *pVertexShader = NULL;
     if (useVS30)
     {
         if (m_pEffectPipelineVertexShader30 == NULL)

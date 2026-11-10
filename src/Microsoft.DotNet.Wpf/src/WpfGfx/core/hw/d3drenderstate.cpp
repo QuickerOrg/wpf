@@ -760,6 +760,10 @@ CD3DRenderState::Init(
                      && pDevice->GetMaxTextureBlendStages() >= 4
                      && pDevice->CanHandleBlendFactor()
                      && !IsTagEnabled(tagDisableHWText);
+#if QUICKER_WPF_D3D11_FACADE
+    // Tier 依照通用设备能力计算；S0b-2b 之前不加载 D3D9 字节码的文字 shader。
+    m_fCanDrawText = FALSE;
+#endif
 
     if (m_fCanDrawText)
     {
@@ -841,7 +845,7 @@ CD3DRenderState::SetDepthStencilSurfaceInternal(
     )
 {
     HRESULT hr = S_OK;
-    IDirect3DSurface9 *pD3DSurfaceNoRef = NULL;
+    QkSurfaceHandle *pD3DSurfaceNoRef = NULL;
     UINT uWidth = 0;
     UINT uHeight = 0;
     
@@ -886,7 +890,7 @@ CD3DRenderState::ReleaseUseOfDepthStencilSurfaceInternal(
 {
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pD3DSurfaceNoRef =
+    QkSurfaceHandle *pD3DSurfaceNoRef =
         pDepthStencilBuffer->GetD3DSurfaceNoAddRef();
 
     if (pD3DSurfaceNoRef)

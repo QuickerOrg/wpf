@@ -29,12 +29,17 @@ MtDefine(D3DResource_Surface, MILHwMetrics, "Approximate surface sizes");
 HRESULT 
 CD3DSurface::Create(
     __inout_ecount(1) CD3DResourceManager *pResourceManager,
-    __inout_ecount(1) IDirect3DSurface9 *pD3DSurface,
+    __inout_ecount(1) QkSurfaceHandle *pD3DSurface,
     __deref_out_ecount(1) CD3DSurface **ppSurface
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    *ppSurface = nullptr; return QkFacadeUnimpl("CD3DSurface::Create.legacy");
+    *ppSurface=nullptr;
+    if(!pD3DSurface) return E_INVALIDARG;
+    CD3DSurface *s=new CD3DSurface(pD3DSurface); if(!s) return E_OUTOFMEMORY;
+    s->AddRef(); HRESULT hr=s->Init(pResourceManager);
+    if(FAILED(hr)) s->Release(); else *ppSurface=s;
+    return hr;
 #else
 
     HRESULT hr = S_OK;
@@ -75,7 +80,7 @@ Cleanup:
 //
 //-------------------------------------------------------------------------
 CD3DSurface::CD3DSurface(
-    __inout_ecount(1) IDirect3DSurface9 * const pD3DSurface
+    __inout_ecount(1) QkSurfaceHandle * const pD3DSurface
     )
     : m_pD3DSurface(pD3DSurface)
 {
@@ -118,6 +123,9 @@ CD3DSurface::Init(
     //
 
     IFC(m_pD3DSurface->GetDesc(&m_d3dsd));
+#if QUICKER_WPF_D3D11_FACADE
+    m_facadeTexture=m_pD3DSurface->texture; m_facadeRTV=m_pD3DSurface->rtv; m_facadeGeneration=m_pD3DSurface->generation;
+#endif
 
     if (m_d3dsd.Pool == D3DPOOL_SYSTEMMEM)
     {
@@ -180,7 +188,7 @@ CD3DSurface::ReleaseD3DResources()
     m_facadeGDI.Reset(); m_facadeRTV.Reset(); m_facadeTexture.Reset();
 #endif
     // This context is protected so it is safe to release the D3D resource
-    ReleaseInterface((*const_cast<IDirect3DSurface9 **>(&m_pD3DSurface)));
+    ReleaseInterface((*const_cast<QkSurfaceHandle **>(&m_pD3DSurface)));
 
     return;
 }
@@ -311,8 +319,8 @@ CD3DSurface::ReadIntoSysMemBuffer(
 #else
 
     HRESULT hr = S_OK;
-    IDirect3DSurface9 *pD3DLockableSurface = NULL;
-    IDirect3DSurface9 *pTempSurface = NULL;
+    QkSurfaceHandle *pD3DLockableSurface = NULL;
+    QkSurfaceHandle *pTempSurface = NULL;
     
     bool fNeedToManuallyCopyBits = true;
     UINT nStrideCopy;
@@ -521,7 +529,9 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     if(format!=D3DFMT_A8R8G8B8 && format!=D3DFMT_X8R8G8B8) return QkFacadeUnimpl("CreateFacadeSurface.format");
     const UINT maxSize = state->featureLevel >= D3D_FEATURE_LEVEL_11_0 ? 16384U : 8192U;
     if(!width || !height || width>maxSize || height>maxSize || static_cast<ULONGLONG>(width)*height*4>UINT_MAX) return E_INVALIDARG;
-    CD3DSurface *s=new CD3DSurface(nullptr); if(!s) return E_OUTOFMEMORY;
+    ComPtr<QkSurfaceHandle> handle; handle.Attach(new QkSurfaceHandle);
+    if(!handle) return E_OUTOFMEMORY;
+    CD3DSurface *s=new CD3DSurface(handle.Get()); if(!s) return E_OUTOFMEMORY;
     s->AddRef();
     D3D11_TEXTURE2D_DESC td={}; td.Width=width; td.Height=height; td.MipLevels=1; td.ArraySize=1;
     td.Format=DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count=1; td.Usage=D3D11_USAGE_DEFAULT;
@@ -534,6 +544,11 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     s->m_d3dsd.Format=format; s->m_d3dsd.Type=D3DRTYPE_SURFACE; s->m_d3dsd.Usage=D3DUSAGE_RENDERTARGET;
     s->m_d3dsd.Pool=D3DPOOL_DEFAULT; s->m_d3dsd.MultiSampleType=D3DMULTISAMPLE_NONE;
     s->m_facadeGeneration=state->generation;
+    handle->texture=s->m_facadeTexture; handle->rtv=s->m_facadeRTV; handle->context=state->context;
+    handle->desc=s->m_d3dsd; handle->generation=state->generation;
+    hr=state->device->CreateShaderResourceView(handle->texture.Get(),nullptr,&handle->srv);
+    if(FAILED(hr)) { s->Release(); return hr; }
+    QkFacadeTrace("QK-FACADE create render-target surface\n");
     s->CD3DResource::Init(manager,width*height*4); *out=s; return S_OK;
 }
 HRESULT CD3DSurface::ReleaseFacadeDC()

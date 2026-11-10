@@ -2871,7 +2871,7 @@ CHwBitmapColorSource::FillTextureWithTransformedSource(
     // This surface is sometimes just a lightweight wrapper around
     // the bits in the IWGXBitmap.  Other times it holds a copy of the
     // bitmap.
-    IDirect3DSurface9* pD3DSysMemSurface = NULL;
+    QkSurfaceHandle* pD3DSysMemSurface = NULL;
 
     // Lock for bitmap- needed if we want to copy to or reference in
     // the system surface
@@ -3158,7 +3158,7 @@ CHwBitmapColorSource::PrepareToPushSourceBitsToVidMem(
         // non-null if we locked the IWGXBitmap- caller is responsible for unlocking, as
         // the bitmap should remain locked until after we PushTheBitsToVideoMemory()
     __out_ecount(1) bool *pfShouldCopySourceToSysMemSurface,
-    __deref_out_ecount(1) IDirect3DSurface9** ppD3DSysMemSurface
+    __deref_out_ecount(1) QkSurfaceHandle** ppD3DSysMemSurface
     DBG_COMMA_PARAM(__in_ecount(1) IWGXBitmapSource *pIDBGBitmapSource)
     )
 {
@@ -3665,14 +3665,14 @@ CHwBitmapColorSource::PushTheSourceBitsToVideoMemory(
     __in_ecount(1) IWGXBitmapSource *pIBitmapSource,
     __in_range(>=,1) UINT cDirtyRects,
     __inout_ecount(cDirtyRects) CMilRectU *rgDirtyRects,
-    __inout_ecount(1) IDirect3DSurface9 *pD3DSysMemSurface,
+    __inout_ecount(1) QkSurfaceHandle *pD3DSysMemSurface,
     bool fCopySourceToSysMemSurface
             // true will cause #2
     )
 {
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pD3DDestSurface = NULL;
+    QkSurfaceHandle *pD3DDestSurface = NULL;
 
     bool fLockedSurface = false;
 
@@ -3986,7 +3986,7 @@ HRESULT CHwBitmapColorSource::GetSysMemUpdateSurfaceSource(
     UINT uWidth,
     UINT uHeight,
     bool fCanCreateFromBits,
-    __deref_out_ecount(1) IDirect3DSurface9** ppD3DSysMemSurface
+    __deref_out_ecount(1) QkSurfaceHandle** ppD3DSysMemSurface
     )
 {
     HRESULT hr = S_OK;
@@ -4340,7 +4340,7 @@ CHwBitmapColorSource::AssertMinimalTextureDesc(
 //
 //-----------------------------------------------------------------------------
 void CHwBitmapColorSource::AssertSysMemSurfaceDescriptionNotChanged(
-    __in_ecount(1) IDirect3DSurface9 *pD3DSysMemSurface,
+    __in_ecount(1) QkSurfaceHandle *pD3DSysMemSurface,
     UINT Width,
     UINT Height
     )
@@ -4367,10 +4367,10 @@ void CHwBitmapColorSource::AssertSysMemSurfaceDescriptionNotChanged(
 //
 //-----------------------------------------------------------------------------
 void CHwBitmapColorSource::AssertSysMemTextureDescriptionNotChanged(
-    __in_ecount(1) IDirect3DTexture9 *pD3DSysMemTexture
+    __in_ecount(1) QkTextureHandle *pD3DSysMemTexture
     )
 {
-    IDirect3DSurface9 *pD3DSysMemSurface = NULL;
+    QkSurfaceHandle *pD3DSysMemSurface = NULL;
 
     Verify(SUCCEEDED(pD3DSysMemTexture->GetSurfaceLevel(
         0,

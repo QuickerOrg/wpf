@@ -62,7 +62,7 @@ CD3DTexture::~CD3DTexture()
 HRESULT 
 CD3DTexture::Init(
     __inout_ecount(1) CD3DResourceManager *pResourceManager,
-    __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+    __inout_ecount(1) QkTextureHandle *pD3DTexture
     )
 {
     HRESULT hr = S_OK;
@@ -102,7 +102,7 @@ Cleanup:
 HRESULT 
 CD3DTexture::InitResource(
     __inout_ecount(1) CD3DResourceManager *pResourceManager,
-    __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+    __inout_ecount(1) QkTextureHandle *pD3DTexture
     )
 {
     HRESULT hr = S_OK;
@@ -197,7 +197,7 @@ CD3DTexture::GetD3DSurfaceLevel(
 {
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pID3DSurface = NULL;
+    QkSurfaceHandle *pID3DSurface = NULL;
 
     Assert(m_pD3DTexture);
 

@@ -4,6 +4,8 @@
 #include <d3dcompiler.h>
 #include <set>
 #include <string>
+#include <regex>
+#include <sstream>
 
 void QkFacadeTrace(const char *line)
 {
@@ -73,6 +75,7 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     if (FAILED(hr)) { state->Release(); return hr; }
     static volatile LONG64 nextGeneration = 0;
     state->generation = InterlockedIncrement64(&nextGeneration);
+    state->m_monitor=monitor;
     *out = state;
     return S_OK;
 }
@@ -81,65 +84,78 @@ void QkD3D11State::ReadCaps(D3DCAPS9 *caps, UINT *memory) const
 {
     ZeroMemory(caps, sizeof(*caps));
     caps->DeviceType = D3DDEVTYPE_HAL;
-    caps->Caps2 = D3DCAPS2_CANSHARERESOURCE;
+    caps->Caps2 = D3DCAPS2_CANSHARERESOURCE | D3DCAPS2_CANAUTOGENMIPMAP;
     caps->DevCaps = D3DDEVCAPS_HWTRANSFORMANDLIGHT | D3DDEVCAPS_HWRASTERIZATION;
     // 这是原算法的能力镜像；真正创建的 shader 固定为 SM4，绝不提交旧 token。
     caps->PixelShaderVersion = D3DPS_VERSION(2, 0);
     caps->VertexShaderVersion = D3DVS_VERSION(2, 0);
     caps->MaxTextureWidth = caps->MaxTextureHeight = featureLevel >= D3D_FEATURE_LEVEL_11_0 ? 16384 : 8192;
     caps->MaxStreams = 1;
-    caps->MaxTextureBlendStages = caps->MaxSimultaneousTextures = 2; // 本切片只实现顶点颜色，不声称支持文字。
+    caps->MaxTextureBlendStages = caps->MaxSimultaneousTextures = 8;
     caps->MaxPrimitiveCount = 0xFFFFF;
     caps->MaxVertexIndex = 0xFFFFFF;
     caps->MaxAnisotropy = 1;
     caps->RasterCaps = D3DPRASTERCAPS_SCISSORTEST;
     caps->PrimitiveMiscCaps = D3DPMISCCAPS_COLORWRITEENABLE;
     caps->SrcBlendCaps = caps->DestBlendCaps = D3DPBLENDCAPS_ONE | D3DPBLENDCAPS_ZERO |
-        D3DPBLENDCAPS_SRCALPHA | D3DPBLENDCAPS_INVSRCALPHA | D3DPBLENDCAPS_INVDESTALPHA | D3DPBLENDCAPS_INVSRCCOLOR;
-    caps->TextureCaps = D3DPTEXTURECAPS_ALPHA;
+        D3DPBLENDCAPS_SRCALPHA | D3DPBLENDCAPS_INVSRCALPHA | D3DPBLENDCAPS_INVDESTALPHA | D3DPBLENDCAPS_INVSRCCOLOR | D3DPBLENDCAPS_BLENDFACTOR;
+    caps->TextureCaps = D3DPTEXTURECAPS_ALPHA | D3DPTEXTURECAPS_MIPMAP;
     caps->TextureFilterCaps = D3DPTFILTERCAPS_MINFPOINT | D3DPTFILTERCAPS_MAGFPOINT |
         D3DPTFILTERCAPS_MINFLINEAR | D3DPTFILTERCAPS_MAGFLINEAR;
-    caps->TextureAddressCaps = D3DPTADDRESSCAPS_CLAMP;
+    caps->TextureAddressCaps = D3DPTADDRESSCAPS_CLAMP | D3DPTADDRESSCAPS_WRAP | D3DPTADDRESSCAPS_MIRROR | D3DPTADDRESSCAPS_BORDER;
     caps->TextureOpCaps = D3DTEXOPCAPS_SELECTARG1 | D3DTEXOPCAPS_MODULATE;
     *memory = static_cast<UINT>(min(static_cast<SIZE_T>(UINT_MAX), adapter.DedicatedVideoMemory + adapter.SharedSystemMemory));
 }
 
 HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *luid)
 {
-    QkD3D11State *state = nullptr;
-    HRESULT hr = QkD3D11State::Create(monitor, &state);
-    if (SUCCEEDED(hr)) { state->ReadCaps(caps, memory); *luid = state->adapter.AdapterLuid; state->Release(); }
-    return hr;
+    struct Caps { D3DCAPS9 caps; UINT memory; LUID luid; };
+    static SRWLOCK lock=SRWLOCK_INIT;
+    static std::map<ULONGLONG,Caps> cached;
+    static ComPtr<IDXGIFactory1> factory;
+    AcquireSRWLockExclusive(&lock);
+    if(!factory || !factory->IsCurrent()) {
+        cached.clear(); factory.Reset();
+        HRESULT hr=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+        if(FAILED(hr)) { ReleaseSRWLockExclusive(&lock); return hr; }
+    }
+    ULONGLONG key=0; bool selected=false;
+    for(UINT a=0;!selected;++a) {
+        ComPtr<IDXGIAdapter1> adapter;
+        if(factory->EnumAdapters1(a,&adapter)!=S_OK) break;
+        for(UINT o=0;;++o) {
+            ComPtr<IDXGIOutput> output;
+            if(adapter->EnumOutputs(o,&output)!=S_OK) break;
+            DXGI_OUTPUT_DESC desc;
+            if(SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor==monitor) {
+                DXGI_ADAPTER_DESC1 ad; HRESULT hr=adapter->GetDesc1(&ad);
+                if(FAILED(hr)) { ReleaseSRWLockExclusive(&lock); return hr; }
+                memcpy(&key,&ad.AdapterLuid,sizeof(key)); selected=true; break;
+            }
+        }
+    }
+    if(!selected) { ReleaseSRWLockExclusive(&lock); return WGXERR_NO_HARDWARE_DEVICE; }
+    auto found=cached.find(key);
+    if(found!=cached.end()) { *caps=found->second.caps; *memory=found->second.memory; *luid=found->second.luid; ReleaseSRWLockExclusive(&lock); return S_OK; }
+    QkD3D11State *state=nullptr;
+    HRESULT hr=QkD3D11State::Create(monitor,&state);
+    if(SUCCEEDED(hr)) {
+        state->ReadCaps(caps,memory); *luid=state->adapter.AdapterLuid;
+        cached[key]={*caps,*memory,*luid}; state->Release();
+        QkFacadeTrace("QK-FACADE caps probe cached per adapter LUID\n");
+    }
+    ReleaseSRWLockExclusive(&lock); return hr;
 }
 
 HRESULT QkD3D11State::Initialize()
 {
-    static const char shader[] =
-        "cbuffer Target : register(b0) { float4 size; };"
-        "struct V { float4 p:SV_Position; float4 c:COLOR; };"
-        "V VS(float3 p:POSITION,float4 c:COLOR) { V v; v.p=float4((p.x-size.z)*2/size.x-1,1-(p.y-size.w)*2/size.y,p.z,1); v.c=c.bgra; return v; }"
-        "float4 PS(V v):SV_Target { return v.c; }";
-    ComPtr<ID3DBlob> vs, ps, errors;
-    HRESULT hr = D3DCompile(shader, sizeof(shader)-1, "QkFacadeSolid", nullptr, nullptr, "VS", "vs_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &vs, &errors);
-    if (FAILED(hr)) { if (errors) QkFacadeTrace(static_cast<const char *>(errors->GetBufferPointer())); return hr; }
-    hr = D3DCompile(shader, sizeof(shader)-1, "QkFacadeSolid", nullptr, nullptr, "PS", "ps_4_0", D3DCOMPILE_ENABLE_STRICTNESS, 0, &ps, &errors);
-    if (FAILED(hr)) return hr;
-    hr = device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &m_vs);
-    if (FAILED(hr)) return hr;
-    hr = device->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &m_ps);
-    if (FAILED(hr)) return hr;
-    D3D11_INPUT_ELEMENT_DESC input[] = {
-        {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0,0,D3D11_INPUT_PER_VERTEX_DATA,0},
-        {"COLOR",0,DXGI_FORMAT_R8G8B8A8_UNORM,0,12,D3D11_INPUT_PER_VERTEX_DATA,0} };
-    hr = device->CreateInputLayout(input, 2, vs->GetBufferPointer(), vs->GetBufferSize(), &m_layoutXYZ);
-    if (FAILED(hr)) return hr;
-    input[1].AlignedByteOffset = 16;
-    hr = device->CreateInputLayout(input, 2, vs->GetBufferPointer(), vs->GetBufferSize(), &m_layoutXYZRHW);
-    if (FAILED(hr)) return hr;
+    HRESULT hr=S_OK;
     D3D11_BUFFER_DESC cb = {};
     cb.ByteWidth = 16; cb.Usage = D3D11_USAGE_DYNAMIC; cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     hr = device->CreateBuffer(&cb, nullptr, &m_constants);
     if (FAILED(hr)) return hr;
+    cb.ByteWidth=sizeof(m_vsData); hr=device->CreateBuffer(&cb,nullptr,&m_vsConstants); if(FAILED(hr)) return hr;
+    cb.ByteWidth=sizeof(m_psData); hr=device->CreateBuffer(&cb,nullptr,&m_psConstants); if(FAILED(hr)) return hr;
     for (UINT i = 0; i < 2; ++i)
     {
         D3D11_RASTERIZER_DESC rd = {};
@@ -148,8 +164,8 @@ HRESULT QkD3D11State::Initialize()
         if (FAILED(hr)) return hr;
     }
     char identity[256];
-    StringCchPrintfA(identity, ARRAYSIZE(identity), "QK-FACADE device hardware generation=%llu FL=0x%x vendor=0x%x device=0x%x shader=vs_4_0/ps_4_0\n",
-        generation, featureLevel, adapter.VendorId, adapter.DeviceId);
+    StringCchPrintfA(identity, ARRAYSIZE(identity), "QK-FACADE device hardware generation=%llu monitor=%p FL=0x%x vendor=0x%x device=0x%x shader=vs_4_0/ps_4_0\n",
+        generation, m_monitor, featureLevel, adapter.VendorId, adapter.DeviceId);
     QkFacadeTrace(identity);
     return S_OK;
 }
@@ -181,6 +197,7 @@ HRESULT QkD3D11State::CreateBuffer(UINT bytes, UINT bind, QkFacadeBuffer **out)
 }
 HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h)
 {
+    ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty);
     target = rtv; width = w; height = h;
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     return DeviceStatus();
@@ -223,17 +240,33 @@ HRESULT QkD3D11State::SetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, D
     if (sampler >= 16 || type >= 14) return E_INVALIDARG;
     m_samplers[sampler][type] = value; return S_OK;
 }
-HRESULT QkD3D11State::SetTexture(DWORD, IDirect3DBaseTexture9 *p) { return p ? QkFacadeUnimpl("SetTexture") : S_OK; }
-HRESULT QkD3D11State::SetVertexShader(IDirect3DVertexShader9 *p) { return p ? QkFacadeUnimpl("SetVertexShader") : S_OK; }
-HRESULT QkD3D11State::SetPixelShader(IDirect3DPixelShader9 *p) { return p ? QkFacadeUnimpl("SetPixelShader") : S_OK; }
-HRESULT QkD3D11State::SetDepthStencilSurface(IDirect3DSurface9 *p) { return p ? QkFacadeUnimpl("SetDepthStencilSurface") : S_OK; }
+HRESULT QkD3D11State::SetTexture(DWORD n, QkBaseTextureHandle *p) {
+    if(n>=8) return E_INVALIDARG;
+    if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    m_textures[n]=p; return S_OK;
+}
+HRESULT QkD3D11State::SetVertexShader(QkVertexShaderHandle *p) {
+    if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    m_boundVS=p; return S_OK;
+}
+HRESULT QkD3D11State::SetPixelShader(QkPixelShaderHandle *p) {
+    if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    m_boundPS=p; return S_OK;
+}
+HRESULT QkD3D11State::SetDepthStencilSurface(QkSurfaceHandle *p) { return p ? QkFacadeUnimpl("SetDepthStencilSurface") : S_OK; }
 HRESULT QkD3D11State::SetTransform(D3DTRANSFORMSTATETYPE type, const void *matrix)
 {
     if (!matrix) return E_INVALIDARG;
     m_transforms[type] = *static_cast<const CBaseMatrix *>(matrix); return S_OK;
 }
-HRESULT QkD3D11State::SetVertexShaderConstantF(UINT, const float *, UINT) { return QkFacadeUnimpl("SetVertexShaderConstantF"); }
-HRESULT QkD3D11State::SetPixelShaderConstantF(UINT, const float *, UINT) { return QkFacadeUnimpl("SetPixelShaderConstantF"); }
+HRESULT QkD3D11State::SetVertexShaderConstantF(UINT start, const float *data, UINT count) {
+    if(!data || start>256 || count>256-start) return E_INVALIDARG;
+    memcpy(m_vsData+start,data,count*16); return S_OK;
+}
+HRESULT QkD3D11State::SetPixelShaderConstantF(UINT start, const float *data, UINT count) {
+    if(!data || start>224 || count>224-start) return E_INVALIDARG;
+    memcpy(m_psData+start,data,count*16); return S_OK;
+}
 HRESULT QkD3D11State::SetPixelShaderConstantI(UINT, const int *, UINT) { return QkFacadeUnimpl("SetPixelShaderConstantI"); }
 HRESULT QkD3D11State::SetPixelShaderConstantB(UINT, const BOOL *, UINT) { return QkFacadeUnimpl("SetPixelShaderConstantB"); }
 HRESULT QkD3D11State::SetMaterial(const D3DMATERIAL9 *material)
@@ -262,6 +295,8 @@ static D3D11_BLEND QkBlend(DWORD value)
     case D3DBLEND_INVSRCALPHA: return D3D11_BLEND_INV_SRC_ALPHA;
     case D3DBLEND_INVDESTALPHA: return D3D11_BLEND_INV_DEST_ALPHA;
     case D3DBLEND_INVSRCCOLOR: return D3D11_BLEND_INV_SRC_COLOR;
+    case D3DBLEND_BLENDFACTOR: return D3D11_BLEND_BLEND_FACTOR;
+    case D3DBLEND_INVBLENDFACTOR: return D3D11_BLEND_INV_BLEND_FACTOR;
     default: return static_cast<D3D11_BLEND>(0); }
 }
 HRESULT QkD3D11State::Apply()
@@ -274,12 +309,6 @@ HRESULT QkD3D11State::Apply()
         m_states[D3DRS_BLENDOP] != D3DBLENDOP_ADD) return QkFacadeUnimpl("Draw.unsupportedRenderState");
     if ((m_fvf & D3DFVF_POSITION_MASK) != D3DFVF_XYZ && (m_fvf & D3DFVF_POSITION_MASK) != D3DFVF_XYZRHW)
         return QkFacadeUnimpl("Draw.vertexLayout");
-    for (UINT stage = 0; stage < 8 && m_stages[stage][D3DTSS_COLOROP] != D3DTOP_DISABLE; ++stage)
-    {
-        DWORD arg = m_stages[stage][D3DTSS_COLORARG1];
-        if (m_stages[stage][D3DTSS_COLOROP] != D3DTOP_SELECTARG1 ||
-            (arg != D3DTA_DIFFUSE && arg != D3DTA_CURRENT)) return QkFacadeUnimpl("Draw.textureStage");
-    }
     unsigned long long key = m_states[D3DRS_ALPHABLENDENABLE] | (static_cast<unsigned long long>(m_states[D3DRS_SRCBLEND]) << 8) |
         (static_cast<unsigned long long>(m_states[D3DRS_DESTBLEND]) << 16) | (static_cast<unsigned long long>(m_states[D3DRS_COLORWRITEENABLE]) << 24);
     auto found = m_blends.find(key);
@@ -301,15 +330,15 @@ HRESULT QkD3D11State::Apply()
     HRESULT hr = context->Map(m_constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map); if (FAILED(hr)) return hr;
     float size[4] = {static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y)}; memcpy(map.pData, size, sizeof(size)); context->Unmap(m_constants.Get(), 0);
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
-    context->OMSetBlendState(found->second.Get(), nullptr, UINT_MAX);
+    DWORD blend=m_states[D3DRS_BLENDFACTOR];
+    float factor[]={((blend>>16)&255)/255.f,((blend>>8)&255)/255.f,(blend&255)/255.f,(blend>>24)/255.f};
+    context->OMSetBlendState(found->second.Get(), factor, UINT_MAX);
     context->OMSetDepthStencilState(nullptr, 0); // 没有 DSV，原 2D Z 关闭意图在上面验证。
     context->RSSetState(m_raster[!!m_states[D3DRS_SCISSORTESTENABLE]].Get());
     context->RSSetScissorRects(1, &m_scissor);
     D3D11_VIEWPORT vp = {static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y), static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), m_viewport.MinZ, m_viewport.MaxZ};
     context->RSSetViewports(1, &vp);
-    context->VSSetShader(m_vs.Get(), nullptr, 0); context->PSSetShader(m_ps.Get(), nullptr, 0);
-    context->VSSetConstantBuffers(0, 1, m_constants.GetAddressOf());
-    context->IASetInputLayout(((m_fvf & D3DFVF_POSITION_MASK) == D3DFVF_XYZRHW ? m_layoutXYZRHW : m_layoutXYZ).Get());
+    hr=ApplyShaders(); if(FAILED(hr)) return hr;
     context->IASetVertexBuffers(0, 1, m_boundVB.GetAddressOf(), &m_stride, &m_offset);
     context->IASetIndexBuffer(m_boundIB.Get(), DXGI_FORMAT_R16_UINT, 0);
     return S_OK;
@@ -317,7 +346,7 @@ HRESULT QkD3D11State::Apply()
 HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
 {
     if (type != D3DPT_TRIANGLELIST && type != D3DPT_TRIANGLESTRIP && type != D3DPT_LINELIST) return QkFacadeUnimpl("Draw.topology");
-    HRESULT hr = Apply(); if (FAILED(hr)) return hr;
+    HRESULT hr = Apply(); if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
     context->IASetPrimitiveTopology(type == D3DPT_TRIANGLELIST ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : type == D3DPT_TRIANGLESTRIP ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
     context->Draw(vertices, start);
     QkFacadeTrace("QK-FACADE Draw original-hw\n");
@@ -325,7 +354,7 @@ HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
 }
 HRESULT QkD3D11State::DrawIndexed(UINT indices, UINT startIndex, INT baseVertex)
 {
-    HRESULT hr = Apply(); if (FAILED(hr)) return hr;
+    HRESULT hr = Apply(); if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); context->DrawIndexed(indices, startIndex, baseVertex);
     QkFacadeTrace("QK-FACADE DrawIndexed original-hw\n");
     return DeviceStatus();
@@ -380,6 +409,12 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
     if (!target) return E_UNEXPECTED;
     float rgba[] = {((color>>16)&255)/255.f, ((color>>8)&255)/255.f, (color&255)/255.f, (color>>24)/255.f};
     if (!count) { context->ClearRenderTargetView(target.Get(), rgba); return DeviceStatus(); }
+    auto savedVS=m_boundVS; auto savedPS=m_boundPS;
+    DWORD savedStages[8][33]; memcpy(savedStages,m_stages,sizeof(m_stages));
+    m_boundVS.Reset(); m_boundPS.Reset();
+    m_stages[0][D3DTSS_COLOROP]=D3DTOP_SELECTARG1; m_stages[0][D3DTSS_COLORARG1]=D3DTA_DIFFUSE;
+    m_stages[0][D3DTSS_ALPHAOP]=D3DTOP_SELECTARG1; m_stages[0][D3DTSS_ALPHAARG1]=D3DTA_DIFFUSE;
+    m_stages[1][D3DTSS_COLOROP]=D3DTOP_DISABLE;
     DWORD saved[210]; memcpy(saved, m_states, sizeof(saved)); DWORD fvf = m_fvf; D3DVIEWPORT9 vp = m_viewport;
     auto vb = m_boundVB; auto ib = m_boundIB; UINT stride = m_stride, offset = m_offset;
     m_states[D3DRS_ALPHABLENDENABLE]=FALSE; m_states[D3DRS_SCISSORTESTENABLE]=FALSE; m_states[D3DRS_COLORWRITEENABLE]=15;
@@ -392,7 +427,9 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
         V v[] = {{l,t,0,color},{r,t,0,color},{l,b,0,color},{l,b,0,color},{r,t,0,color},{r,b,0,color}};
         hr = DrawUP(D3DPT_TRIANGLELIST, 2, v, sizeof(V));
     }
+    m_boundVS=savedVS; m_boundPS=savedPS; memcpy(m_stages,savedStages,sizeof(m_stages));
     memcpy(m_states, saved, sizeof(saved)); m_fvf=fvf; m_viewport=vp; m_boundVB=vb; m_boundIB=ib; m_stride=stride; m_offset=offset;
     return hr;
 }
+#include "d3d11facade-resources.inl"
 #endif

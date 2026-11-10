@@ -67,7 +67,7 @@ public:
 
     // Accessors
     CD3DGlyphTank* GetTank() { return m_pTank; }
-    IDirect3DTexture9* GetTextureNoAddref() const {Assert(m_pTank); return m_pTank->GetTextureNoAddref();}
+    QkTextureHandle* GetTextureNoAddref() const {Assert(m_pTank); return m_pTank->GetTextureNoAddref();}
     float GetWidTextureRc() const {Assert(m_pTank); return m_pTank->GetWidTextureRc();}
     float GetHeiTextureRc() const {Assert(m_pTank); return m_pTank->GetHeiTextureRc();}
     RECT const& GetFilteredRect() const {return m_rcFiltered;}

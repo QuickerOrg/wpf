@@ -322,7 +322,7 @@ Cleanup:
 HRESULT
 CHwRenderStateManager::ForceSetTexture(
     DWORD dwStage,
-    __in_ecount_opt(1) IDirect3DBaseTexture9 *pTexture
+    __in_ecount_opt(1) QkBaseTextureHandle *pTexture
     )
 {
     HRESULT hr = S_OK;
@@ -488,7 +488,7 @@ Cleanup:
 //-------------------------------------------------------------------------
 HRESULT
 CHwRenderStateManager::ForceSetVertexShader(
-    __in_ecount_opt(1) IDirect3DVertexShader9 *pVertexShader
+    __in_ecount_opt(1) QkVertexShaderHandle *pVertexShader
     )
 {
     HRESULT hr = S_OK;
@@ -517,7 +517,7 @@ Cleanup:
 //-------------------------------------------------------------------------
 HRESULT
 CHwRenderStateManager::ForceSetPixelShader(
-    __in_ecount_opt(1) IDirect3DPixelShader9 *pPixelShader
+    __in_ecount_opt(1) QkPixelShaderHandle *pPixelShader
     )
 {
     HRESULT hr = S_OK;
@@ -546,7 +546,7 @@ Cleanup:
 //-------------------------------------------------------------------------
 HRESULT
 CHwRenderStateManager::ForceSetDepthStencilSurface(
-    __in_ecount_opt(1) IDirect3DSurface9 *pDepthStencilSurface,
+    __in_ecount_opt(1) QkSurfaceHandle *pDepthStencilSurface,
     UINT uWidth,
     UINT uHeight
     )
@@ -1063,7 +1063,7 @@ CHwRenderStateManager::IsDepthStencilSurfaceSmallerThan(
     UINT uHeight
     ) const
 {
-    IDirect3DSurface9 *pD3DSurface = NULL;
+    QkSurfaceHandle *pD3DSurface = NULL;
 
     bool fIsSmaller;
 

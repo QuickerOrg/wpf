@@ -588,7 +588,7 @@ HRESULT
 CHwDeviceBitmapColorSource::UpdateSurface(
     __in UINT cDirtyRects,
     __in_ecount(cDirtyRects) const CMilRectU *prgDirtyRects,
-    __in_ecount(1) IDirect3DSurface9 *pISrcSurface
+    __in_ecount(1) QkSurfaceHandle *pISrcSurface
     )
 {
     HRESULT hr = S_OK;
@@ -624,10 +624,13 @@ Cleanup:
 HRESULT
 CHwDeviceBitmapColorSource::Flush(
     __in_ecount(1) IDirect3DDevice9 *pID3DDevice,
-    __in_ecount(1) IDirect3DSurface9 *pID3DSurface,
+    __in_ecount(1) QkSurfaceHandle *pID3DSurface,
     __in_ecount(1) const D3DSURFACE_DESC &desc
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CHwDeviceBitmapColorSource::Flush");
+#else
     HRESULT hr = S_OK;
     // The surface that we will read back from will be 16x16 unless
     // the source is smaller than that. We don't do 1x1 because D3D
@@ -637,7 +640,7 @@ CHwDeviceBitmapColorSource::Flush(
     const RECT rcCopy = { 0, 0, uFlushWidth, uFlushHeight };
     const RECT rcFlush = { 0, 0, 1, 1 };
 
-    IDirect3DSurface9 *pIFlushSurface = NULL;
+    QkSurfaceHandle *pIFlushSurface = NULL;
     
     IFC(pID3DDevice->CreateRenderTarget(
         uFlushWidth,
@@ -674,6 +677,7 @@ Cleanup:
     ReleaseInterface(pIFlushSurface);
     
     RRETURN(hr);
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -692,16 +696,19 @@ HRESULT
 CHwDeviceBitmapColorSource::UpdateSurfaceSharedHandle(
     UINT cDirtyRects,
     __in_ecount(cDirtyRects) const CMilRectU *prgDirtyRects,
-    __in_ecount(1) IDirect3DSurface9 *pISrcSurface
+    __in_ecount(1) QkSurfaceHandle *pISrcSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CHwDeviceBitmapColorSource::UpdateSurfaceSharedHandle");
+#else
     HRESULT hr = S_OK;
 
     Assert(m_hSharedHandle);
     
     IDirect3DDevice9 *pID3DSrcDevice = NULL;
-    IDirect3DTexture9 *pIDestTexture = NULL;
-    IDirect3DSurface9 *pIDestSurface = NULL;
+    QkTextureHandle *pIDestTexture = NULL;
+    QkSurfaceHandle *pIDestSurface = NULL;
     
     IFC(pISrcSurface->GetDevice(&pID3DSrcDevice));
 
@@ -747,6 +754,7 @@ Cleanup:
     ReleaseInterface(pID3DSrcDevice);
 
     RRETURN(hr);
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -764,7 +772,7 @@ HRESULT
 CHwDeviceBitmapColorSource::UpdateSurfaceSoftware(
     UINT cDirtyRects,
     __in_ecount(cDirtyRects) const CMilRectU *prgDirtyRects,
-    __in_ecount(1) IDirect3DSurface9 *pISrcSurface
+    __in_ecount(1) QkSurfaceHandle *pISrcSurface
     )
 {
     HRESULT hr = S_OK;

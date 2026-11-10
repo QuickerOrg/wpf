@@ -237,6 +237,9 @@ CD3DSwapChain::Init(
     __inout_ecount(1) CD3DResourceManager *pResourceManager
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DSwapChain::Init");
+#else
     HRESULT hr = S_OK;
 
     Assert(pResourceManager);
@@ -253,7 +256,7 @@ CD3DSwapChain::Init(
 
     for (UINT i = 0; i < m_cBackBuffers; i++)
     {
-        IDirect3DSurface9 *pD3DBackBuffer = NULL;
+        QkSurfaceHandle *pD3DBackBuffer = NULL;
 
         IFC(m_pD3DSwapChain->GetBackBuffer(i,  D3DBACKBUFFER_TYPE_MONO, &pD3DBackBuffer));
 
@@ -269,6 +272,7 @@ CD3DSwapChain::Init(
 
 Cleanup:
     RRETURN(hr);
+#endif
 }
 
 //+------------------------------------------------------------------------

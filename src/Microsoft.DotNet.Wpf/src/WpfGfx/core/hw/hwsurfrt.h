@@ -256,7 +256,7 @@ public:
     HRESULT PopulateDestinationTexture(
         __in_ecount(1) const CMILSurfaceRect *prcSource,
         __in_ecount(1) const CMILSurfaceRect *prcDest,
-        __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+        __inout_ecount(1) QkTextureHandle *pD3DTexture
         );
 
 protected:

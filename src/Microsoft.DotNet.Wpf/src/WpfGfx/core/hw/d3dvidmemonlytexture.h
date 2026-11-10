@@ -34,7 +34,7 @@ public:
         );
 
     static HRESULT Create(
-        __inout_ecount(1) IDirect3DTexture9 *pD3DExistingTexture,
+        __inout_ecount(1) QkTextureHandle *pD3DExistingTexture,
         bool fIsEvictable,
         __inout_ecount(1) CD3DDeviceLevel1 *pDevice,
         __deref_out_ecount(1) CD3DVidMemOnlyTexture **ppVidMemOnlyTexture
@@ -46,7 +46,7 @@ protected:
 
     HRESULT Init(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+        __inout_ecount(1) QkTextureHandle *pD3DTexture
         );
 
 #if PERFMETER

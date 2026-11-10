@@ -965,14 +965,10 @@ CHwSurfaceRenderTarget::ShaderAcceleratedFillPath(
 
     Assert(m_pD3DDevice->IsInAUseContext());
 
-#if QUICKER_WPF_D3D11_FACADE
-    CHwFFPipeline Pipeline(m_pD3DDevice);
-#else
     CHwShaderPipeline Pipeline(
         true, /* this is a 2D pipeline */
         m_pD3DDevice
         );
-#endif
 
     IFC(Pipeline.InitializeForRendering(
         CompositingMode,
@@ -3427,11 +3423,11 @@ HRESULT
 CHwSurfaceRenderTarget::PopulateDestinationTexture(
     __in_ecount(1) const CMILSurfaceRect *prcSource,
     __in_ecount(1) const CMILSurfaceRect *prcDest,
-    __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+    __inout_ecount(1) QkTextureHandle *pD3DTexture
     )
 {
     HRESULT hr = S_OK;
-    IDirect3DSurface9 *pD3DSurface = NULL;
+    QkSurfaceHandle *pD3DSurface = NULL;
 
     ENTER_USE_CONTEXT_FOR_SCOPE(*m_pD3DDevice);
 

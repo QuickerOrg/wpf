@@ -296,12 +296,12 @@ public:
         D3DMULTISAMPLE_TYPE d3dMultiSampleType,
         DWORD dwMultisampleQuality,
         bool fLockable,
-        __deref_out_ecount(1) IDirect3DSurface9 ** const ppD3DSurface
+        __deref_out_ecount(1) QkSurfaceHandle ** const ppD3DSurface
         );
 
     HRESULT GetRenderTargetData(
-        __in_ecount(1) IDirect3DSurface9 *pSourceSurface,
-        __in_ecount(1) IDirect3DSurface9 *pDestinationSurface
+        __in_ecount(1) QkSurfaceHandle *pSourceSurface,
+        __in_ecount(1) QkSurfaceHandle *pDestinationSurface
         );
 
     HRESULT CreateVertexBuffer(
@@ -326,8 +326,8 @@ public:
         );
 
     HRESULT ComposeRects(
-        __in_ecount(1) IDirect3DSurface9* pSource,
-        __inout_ecount(1) IDirect3DSurface9* pDestination,
+        __in_ecount(1) QkSurfaceHandle* pSource,
+        __inout_ecount(1) QkSurfaceHandle* pDestination,
         __in_ecount(1) QkVertexBufferHandle* pSrcRectDescriptors,
         UINT NumRects,
         __in_ecount(1) QkVertexBufferHandle* pDstRectDescriptors,
@@ -337,40 +337,40 @@ public:
     HRESULT CreateTexture(
         __in_ecount(1) const D3DSURFACE_DESC *pSurfDesc,
         UINT uLevels,
-        __deref_out_ecount(1) IDirect3DTexture9 ** const ppD3DTexture,
+        __deref_out_ecount(1) QkTextureHandle ** const ppD3DTexture,
         __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle = NULL
         );
 
     HRESULT CreatePixelShaderFromResource(
         UINT uResourceId,
-        __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppPixelShader
+        __deref_out_ecount(1) QkPixelShaderHandle ** const ppPixelShader
         );
 
     HRESULT CreateVertexShaderFromResource(
         UINT uResourceId,
-        __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppVertexShader
+        __deref_out_ecount(1) QkVertexShaderHandle ** const ppVertexShader
         );
         
     HRESULT CompilePipelineVertexShader(
         __in_bcount(cbHLSLSource) PCSTR pHLSLSource,
         UINT cbHLSLSource,
-        __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppVertexShader
+        __deref_out_ecount(1) QkVertexShaderHandle ** const ppVertexShader
         );
 
     HRESULT CompilePipelinePixelShader(
         __in_bcount(cbHLSLSource) PCSTR pHLSLSource,
         UINT cbHLSLSource,
-        __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppPixelShader
+        __deref_out_ecount(1) QkPixelShaderHandle ** const ppPixelShader
         );
 
     HRESULT CreateVertexShader(
         __in const DWORD *pdwfnVertexShader,
-        __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppOutShader
+        __deref_out_ecount(1) QkVertexShaderHandle ** const ppOutShader
         );
 
     HRESULT CreatePixelShader(
         __in const DWORD *pdwfnPixelShader,
-        __deref_out_ecount(1) IDirect3DPixelShader9 **const ppOutShader
+        __deref_out_ecount(1) QkPixelShaderHandle **const ppOutShader
         );
 
 
@@ -384,7 +384,7 @@ public:
         UINT uHeight,
         D3DFORMAT fmtTexture,
         __in_xcount_opt(uWidth * uHeight * D3DFormatSize(fmtTexture)) void *pvPixels,
-        __deref_out_ecount(1) IDirect3DSurface9 ** const ppD3DSysMemSurface
+        __deref_out_ecount(1) QkSurfaceHandle ** const ppD3DSysMemSurface
         );
 
     HRESULT CreateSysMemReferenceTexture(
@@ -393,19 +393,19 @@ public:
             pSurfDesc->Width * pSurfDesc->Height
             * D3DFormatSize(pSurfDesc->Format)
             ) void *pvPixels,
-        __deref_out_ecount(1) IDirect3DTexture9 ** const ppD3DSysMemTexture
+        __deref_out_ecount(1) QkTextureHandle ** const ppD3DSysMemTexture
         );
 
     HRESULT UpdateSurface(
-        __in_ecount(1) IDirect3DSurface9 *pD3DSysMemSrcSurface,
+        __in_ecount(1) QkSurfaceHandle *pD3DSysMemSrcSurface,
         __in_ecount_opt(1) const RECT *pSourceRect,
-        __inout_ecount(1) IDirect3DSurface9 *pD3DPoolDefaultDestSurface,
+        __inout_ecount(1) QkSurfaceHandle *pD3DPoolDefaultDestSurface,
         __in_ecount_opt(1) const POINT *pDestPoint
         );
 
     HRESULT UpdateTexture(
-        __in_ecount(1) IDirect3DTexture9 *pD3DSysMemSrcTexture,
-        __inout_ecount(1) IDirect3DTexture9 *pD3DPoolDefaultDestTexture
+        __in_ecount(1) QkTextureHandle *pD3DSysMemSrcTexture,
+        __inout_ecount(1) QkTextureHandle *pD3DPoolDefaultDestTexture
         );
 
     HRESULT StretchRect(
@@ -428,7 +428,7 @@ public:
     HRESULT StretchRect(
         __in_ecount(1) CD3DSurface *pSourceSurface,
         __in_ecount_opt(1) const RECT *pSourceRect,
-        __inout_ecount(1) IDirect3DSurface9 *pDestSurface,
+        __inout_ecount(1) QkSurfaceHandle *pDestSurface,
         __in_ecount_opt(1) const RECT *pDestRect,
         D3DTEXTUREFILTERTYPE Filter
         );
@@ -459,7 +459,7 @@ public:
     HRESULT
     SetD3DTexture(
         DWORD dwTextureStage,
-        __in_ecount_opt(1) IDirect3DTexture9 *pD3DTexture
+        __in_ecount_opt(1) QkTextureHandle *pD3DTexture
         );
 
     HRESULT DisableTextureTransform(DWORD dwTextureStage);
@@ -484,7 +484,7 @@ public:
         );
 
     HRESULT ColorFill(
-        __inout_ecount(1) IDirect3DSurface9 *pSurface,
+        __inout_ecount(1) QkSurfaceHandle *pSurface,
         __in_ecount_opt(1) const RECT *pRect,
         D3DCOLOR color
         );
@@ -501,8 +501,8 @@ public:
         );
 
     HRESULT CopyD3DTexture(
-        __in_ecount(1) IDirect3DTexture9 *pD3DSourceTexture,
-        __inout_ecount(1) IDirect3DTexture9 *pD3DDestinationTexture
+        __in_ecount(1) QkTextureHandle *pD3DSourceTexture,
+        __inout_ecount(1) QkTextureHandle *pD3DDestinationTexture
         );
 
     HRESULT GetMinimalTextureDesc(
@@ -1043,7 +1043,7 @@ private:
     CD3DGlyphBank m_glyphBank;
 
     // Dummy back buffer for use when there is no current render target
-    IDirect3DSurface9 *m_pD3DDummyBackBuffer;
+    QkSurfaceHandle *m_pD3DDummyBackBuffer;
 
     // Per frame metrics
     DWORD m_dwMetricsVerticesPerFrame;
@@ -1133,10 +1133,10 @@ public:
     bool Is128BitFPTextureSupported() const;
 private: 
 
-    IDirect3DVertexShader9* m_pEffectPipelineVertexShader20; // Vertex shader 2.0 for shader effects pipeline.
-    IDirect3DVertexShader9* m_pEffectPipelineVertexShader30; // Vertex shader 3.0 for shader effects pipeline.
+    QkVertexShaderHandle* m_pEffectPipelineVertexShader20; // Vertex shader 2.0 for shader effects pipeline.
+    QkVertexShaderHandle* m_pEffectPipelineVertexShader30; // Vertex shader 3.0 for shader effects pipeline.
     QkVertexBufferHandle* m_pEffectPipelineVertexBuffer; // Scratch buffer for the shader effects pipeline.
-    IDirect3DPixelShader9* m_pEffectPipelinePassThroughPixelShader; // Pass-through pixel shader for shader effects pipelines.
+    QkPixelShaderHandle* m_pEffectPipelinePassThroughPixelShader; // Pass-through pixel shader for shader effects pipelines.
 };
 
 //+-----------------------------------------------------------------------------

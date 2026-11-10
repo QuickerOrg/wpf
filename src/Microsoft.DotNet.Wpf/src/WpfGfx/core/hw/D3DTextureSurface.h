@@ -23,13 +23,13 @@ private:
 public:
     static HRESULT Create(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __inout_ecount(1) IDirect3DSurface9 *pID3DSurface,
+        __inout_ecount(1) QkSurfaceHandle *pID3DSurface,
         __deref_out_ecount(1) CD3DSurface **ppSurface
         );
 
 protected:
 
-    CD3DTextureSurface(__inout_ecount(1) IDirect3DSurface9 * pD3DSurface);
+    CD3DTextureSurface(__inout_ecount(1) QkSurfaceHandle * pD3DSurface);
 
     HRESULT Init(
         __inout_ecount(1) CD3DResourceManager *pResourceManager

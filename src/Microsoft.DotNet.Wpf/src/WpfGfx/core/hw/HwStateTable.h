@@ -487,8 +487,8 @@ CStateTable<StateType>::UpdateState(
 
 template<>
 MIL_FORCEINLINE void
-CStateTable<IDirect3DBaseTexture9 *>::CEntry::GetValue(
-    __out_ecount(1) IDirect3DBaseTexture9 *&oOutValue
+CStateTable<QkBaseTextureHandle *>::CEntry::GetValue(
+    __out_ecount(1) QkBaseTextureHandle *&oOutValue
     ) const
 {
     oOutValue = m_oValue;
@@ -501,8 +501,8 @@ CStateTable<IDirect3DBaseTexture9 *>::CEntry::GetValue(
 
 template<>
 MIL_FORCEINLINE void
-CStateTable<IDirect3DVertexShader9 *>::CEntry::GetValue(
-    __out_ecount(1) IDirect3DVertexShader9 *&oOutValue
+CStateTable<QkVertexShaderHandle *>::CEntry::GetValue(
+    __out_ecount(1) QkVertexShaderHandle *&oOutValue
     ) const
 {
     oOutValue = m_oValue;
@@ -513,10 +513,11 @@ CStateTable<IDirect3DVertexShader9 *>::CEntry::GetValue(
     }
 }
 
+#if !QUICKER_WPF_D3D11_FACADE
 template<>
 MIL_FORCEINLINE void
-CStateTable<IDirect3DPixelShader9 *>::CEntry::GetValue(
-    __out_ecount(1) IDirect3DPixelShader9 *&oOutValue
+CStateTable<QkPixelShaderHandle *>::CEntry::GetValue(
+    __out_ecount(1) QkPixelShaderHandle *&oOutValue
     ) const
 {
     oOutValue = m_oValue;
@@ -527,6 +528,7 @@ CStateTable<IDirect3DPixelShader9 *>::CEntry::GetValue(
     }
 }
 
+#endif
 template<>
 MIL_FORCEINLINE void
 CStateTable<QkIndexBufferHandle *>::CEntry::GetValue(
@@ -557,8 +559,8 @@ CStateTable<QkVertexBufferHandle *>::CEntry::GetValue(
 
 template<>
 MIL_FORCEINLINE void
-CStateTable<IDirect3DSurface9 *>::CEntry::GetValue(
-    __out_ecount(1) IDirect3DSurface9 *&oOutValue
+CStateTable<QkSurfaceHandle *>::CEntry::GetValue(
+    __out_ecount(1) QkSurfaceHandle *&oOutValue
     ) const
 {
     oOutValue = m_oValue;

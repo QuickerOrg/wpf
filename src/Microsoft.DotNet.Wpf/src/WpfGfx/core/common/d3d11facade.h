@@ -6,6 +6,8 @@
 #include <wrl/client.h>
 #include <map>
 #include <vector>
+#include <string>
+#include <d3dcompiler.h>
 
 // WPF 内部执行对象；不实现任何 D3D9 COM 接口。
 HRESULT QkFacadeUnimpl(const char *name);
@@ -31,15 +33,80 @@ template<int Tag> class QkTypedBuffer : public QkFacadeBuffer {};
 using QkVertexBufferHandle = QkTypedBuffer<0>;
 using QkIndexBufferHandle = QkTypedBuffer<1>;
 
+// 纹理与 mip 视图共同持有资源；CPU 锁定镜像仅用于位图/渐变上传。
+class QkTextureHandle;
+class QkSurfaceHandle
+{
+    LONG m_refs = 1;
+public:
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11Texture2D> staging;
+    D3DSURFACE_DESC desc = {};
+    UINT mip = 0;
+    ULONGLONG generation = 0;
+    std::vector<BYTE> pixels;
+    std::vector<BYTE> uploadPixels;
+    BYTE *reference = nullptr;
+    bool locked = false;
+    DWORD lockFlags = 0;
+    RECT lockRect = {};
+    virtual ~QkSurfaceHandle() = default;
+    ULONG AddRef() { return InterlockedIncrement(&m_refs); }
+    ULONG Release() { LONG n=InterlockedDecrement(&m_refs); if(!n) delete this; return n; }
+    HRESULT GetDesc(D3DSURFACE_DESC *out) { *out=desc; return S_OK; }
+    HRESULT LockRect(D3DLOCKED_RECT *out, const RECT *rect, DWORD flags);
+    HRESULT UnlockRect();
+    HRESULT UploadRect(const RECT &rect,const BYTE *data,UINT pitch);
+    HRESULT GetDC(HDC *) { return QkFacadeUnimpl("Surface.GetDC"); }
+    HRESULT ReleaseDC(HDC) { return QkFacadeUnimpl("Surface.ReleaseDC"); }
+};
+class QkTextureHandle
+{
+    LONG m_refs = 1;
+public:
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11DeviceContext> context;
+    std::vector<QkSurfaceHandle *> levels;
+    ULONGLONG generation = 0;
+    ~QkTextureHandle() { for(auto p:levels) p->Release(); }
+    ULONG AddRef() { return InterlockedIncrement(&m_refs); }
+    ULONG Release() { LONG n=InterlockedDecrement(&m_refs); if(!n) delete this; return n; }
+    UINT GetLevelCount() const { return static_cast<UINT>(levels.size()); }
+    HRESULT GetLevelDesc(UINT n,D3DSURFACE_DESC *out) { if(n>=levels.size()) return E_INVALIDARG; *out=levels[n]->desc; return S_OK; }
+    HRESULT GetSurfaceLevel(UINT n,QkSurfaceHandle **out) { *out=nullptr; if(n>=levels.size()) return E_INVALIDARG; *out=levels[n]; (*out)->AddRef(); return S_OK; }
+    HRESULT LockRect(UINT n,D3DLOCKED_RECT *out,const RECT *rect,DWORD flags) { return n<levels.size()?levels[n]->LockRect(out,rect,flags):E_INVALIDARG; }
+    HRESULT UnlockRect(UINT n) { return n<levels.size()?levels[n]->UnlockRect():E_INVALIDARG; }
+    HRESULT AddDirtyRect(const RECT *);
+    void GenerateMipSubLevels() { context->GenerateMips(srv.Get()); }
+};
+using QkBaseTextureHandle = QkTextureHandle;
+class QkFacadeShader
+{
+    LONG m_refs = 1;
+public:
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3DBlob> code;
+    UINT sampledMask = 0;
+    std::map<DWORD,ComPtr<ID3D11InputLayout>> layouts;
+    ULONGLONG generation = 0;
+    ULONG AddRef() { return InterlockedIncrement(&m_refs); }
+    ULONG Release() { LONG n=InterlockedDecrement(&m_refs); if(!n) delete this; return n; }
+};
+using QkVertexShaderHandle = QkFacadeShader;
+using QkPixelShaderHandle = QkFacadeShader;
+
 class QkD3D11State;
 using QkStateHandle = QkD3D11State;
 
 class QkD3D11State
 {
     LONG m_refs = 1;
-    ComPtr<ID3D11VertexShader> m_vs;
-    ComPtr<ID3D11PixelShader> m_ps;
-    ComPtr<ID3D11InputLayout> m_layoutXYZ, m_layoutXYZRHW;
+    HMONITOR m_monitor = nullptr;
     ComPtr<ID3D11Buffer> m_constants, m_uploadVB, m_uploadIB;
     UINT m_vbCapacity = 0, m_ibCapacity = 0;
     ComPtr<ID3D11Buffer> m_boundVB, m_boundIB;
@@ -55,7 +122,16 @@ class QkD3D11State
     RECT m_scissor = {};
     std::map<unsigned long long, ComPtr<ID3D11BlendState>> m_blends;
     ComPtr<ID3D11RasterizerState> m_raster[2];
+    ComPtr<ID3D11Buffer> m_vsConstants, m_psConstants;
+    float m_vsData[256][4] = {}, m_psData[224][4] = {};
+    ComPtr<QkFacadeShader> m_boundVS, m_boundPS;
+    ComPtr<QkTextureHandle> m_textures[8];
+    std::map<std::string,ComPtr<QkFacadeShader>> m_shaderCache;
+    std::map<std::string,ComPtr<ID3D11SamplerState>> m_samplerCache;
     HRESULT Apply();
+    HRESULT ApplyShaders();
+    HRESULT InputLayout(QkFacadeShader *shader, ID3D11InputLayout **out);
+
     HRESULT Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes);
 public:
     ComPtr<ID3D11Device> device;
@@ -67,6 +143,10 @@ public:
     UINT width = 0, height = 0;
     static HRESULT Create(HMONITOR monitor, QkD3D11State **out);
     HRESULT Initialize();
+    HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out);
+    HRESULT Compile(const char *source, UINT bytes, bool vertex, QkFacadeShader **out);
+    HRESULT Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter);
+
     HRESULT DeviceStatus() const
     {
         return SUCCEEDED(device->GetDeviceRemovedReason()) ? S_OK : WGXERR_DISPLAYSTATEINVALID;
@@ -97,11 +177,11 @@ public:
     HRESULT SetRenderState(D3DRENDERSTATETYPE type, DWORD value);
     HRESULT SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value);
     HRESULT SetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value);
-    HRESULT SetTexture(DWORD stage, IDirect3DBaseTexture9 *texture);
+    HRESULT SetTexture(DWORD stage, QkBaseTextureHandle *texture);
     HRESULT SetFVF(DWORD fvf) { m_fvf = fvf; return S_OK; }
-    HRESULT SetVertexShader(IDirect3DVertexShader9 *shader);
-    HRESULT SetPixelShader(IDirect3DPixelShader9 *shader);
-    HRESULT SetDepthStencilSurface(IDirect3DSurface9 *surface);
+    HRESULT SetVertexShader(QkVertexShaderHandle *shader);
+    HRESULT SetPixelShader(QkPixelShaderHandle *shader);
+    HRESULT SetDepthStencilSurface(QkSurfaceHandle *surface);
     HRESULT SetTransform(D3DTRANSFORMSTATETYPE type, const void *matrix);
     HRESULT SetVertexShaderConstantF(UINT start, const float *data, UINT count);
     HRESULT SetPixelShaderConstantF(UINT start, const float *data, UINT count);
@@ -116,6 +196,11 @@ public:
 
 HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *luid);
 #else
+using QkTextureHandle = IDirect3DTexture9;
+using QkBaseTextureHandle = IDirect3DBaseTexture9;
+using QkSurfaceHandle = IDirect3DSurface9;
+using QkVertexShaderHandle = IDirect3DVertexShader9;
+using QkPixelShaderHandle = IDirect3DPixelShader9;
 using QkStateHandle = IDirect3DDevice9;
 using QkVertexBufferHandle = IDirect3DVertexBuffer9;
 using QkIndexBufferHandle = IDirect3DIndexBuffer9;

@@ -80,7 +80,7 @@ HRESULT
 CHwBitBltDeviceBitmapColorSource::Realize()
 {
     HRESULT hr = S_OK;
-    IDirect3DSurface9 *pISrcSurface = NULL;
+    QkSurfaceHandle *pISrcSurface = NULL;
 
     if (!IsRealizationValid())
     {
@@ -233,13 +233,13 @@ HRESULT
 CHwBitBltDeviceBitmapColorSource::UpdateSurface(
     __in UINT cDirtyRects,
     __in_ecount(cDirtyRects) const CMilRectU *prgDirtyRects,
-    __in_ecount(1) IDirect3DSurface9 *pISrcSurface
+    __in_ecount(1) QkSurfaceHandle *pISrcSurface
     )
 {
     HRESULT hr = S_OK;
     HDC hSrcDC = NULL;
     HDC hTransferDC = NULL;
-    IDirect3DSurface9 *pIDestSurface = NULL;
+    QkSurfaceHandle *pIDestSurface = NULL;
 
     ENTER_DEVICE_FOR_SCOPE(*m_pDevice);
 

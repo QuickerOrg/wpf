@@ -205,7 +205,7 @@ Cleanup:
 CInteropDeviceBitmap::GetUpdateMethod(
     __in IDirect3DDevice9 *pID3DDevice,
     __in_opt const IDirect3DDevice9Ex *pID3DDeviceEx,
-    __in IDirect3DSurface9 *pID3DSurface
+    __in QkSurfaceHandle *pID3DSurface
     )
 {   
     HRESULT hr = S_OK;
@@ -258,9 +258,12 @@ CInteropDeviceBitmap::Create(
     __deref_out CInteropDeviceBitmap **ppInteropDeviceBitmap
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CInteropDeviceBitmap::Create");
+#else
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pID3DUserSurface = NULL;
+    QkSurfaceHandle *pID3DUserSurface = NULL;
     IDirect3DDevice9 *pID3DUserDevice = NULL;
     IDirect3DDevice9Ex *pID3DUserDeviceEx = NULL;
     CD3DDeviceManager *pDeviceManager = CD3DDeviceManager::Get();
@@ -268,7 +271,7 @@ CInteropDeviceBitmap::Create(
     CInteropDeviceBitmap *pInteropDeviceBitmap = NULL;
         
     IFC(pIUserSurface->QueryInterface(
-        __uuidof(IDirect3DSurface9), 
+        __uuidof(QkSurfaceHandle),
         reinterpret_cast<void **>(&pID3DUserSurface)
         ));
     IFC(pID3DUserSurface->GetDesc(&desc));
@@ -383,6 +386,7 @@ Cleanup:
     CD3DDeviceManager::Release();
  
     RRETURN(hr);
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -406,7 +410,7 @@ CInteropDeviceBitmap::CInteropDeviceBitmap(
     MilPixelFormat::Enum fmtPixel,
     FrontBufferUpdateMethod oUpdateMethod,
     UINT uAdapter,
-    __in IDirect3DSurface9 *pUserSurface
+    __in QkSurfaceHandle *pUserSurface
     )
     : 
     CDeviceBitmap(uWidth, uHeight, fmtPixel),
@@ -833,7 +837,10 @@ HRESULT
 CInteropDeviceBitmap::GetDisplayFromUserDevice(
     __deref_out const CDisplay **ppDisplay
     )
-{ 
+{
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CInteropDeviceBitmap::GetDisplayFromUserDevice");
+#else
     Assert(m_pIUserSurface);
 
     HRESULT hr = S_OK;
@@ -862,6 +869,7 @@ Cleanup:
     ReleaseInterface(pDisplaySet);
 
     RRETURN(hr);
+#endif
 }
 
 

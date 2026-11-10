@@ -38,7 +38,7 @@ public:
 
     static HRESULT Create(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __in_ecount(1) IDirect3DTexture9 *pD3DTexture,
+        __in_ecount(1) QkTextureHandle *pD3DTexture,
         __deref_out_ecount(1) CD3DLockableTexture **ppD3DLockableTexture
         );
 
@@ -62,7 +62,7 @@ protected:
 
     HRESULT Init(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __in_ecount(1) IDirect3DTexture9 *pD3DTexture
+        __in_ecount(1) QkTextureHandle *pD3DTexture
         );
 
 #if PERFMETER

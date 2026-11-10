@@ -609,7 +609,7 @@ private:
         BOOL fBitmapSourceIsCBitmap,
         __deref_out_ecount_opt(1) IWGXBitmapLock **ppILock,
         __out_ecount(1) bool *pfShouldCopySourceToSysMemSurface,
-        __deref_out_ecount(1) IDirect3DSurface9** ppD3DSysMemSurface
+        __deref_out_ecount(1) QkSurfaceHandle** ppD3DSysMemSurface
         DBG_COMMA_PARAM(__in_ecount(1) IWGXBitmapSource *pIDBGBitmapSource)
         );
 
@@ -639,7 +639,7 @@ private:
         __in_ecount(1) IWGXBitmapSource *pIBitmapSource,
         __in_range(>=,1) UINT cDirtyRects,
         __inout_ecount(cDirtyRects) CMilRectU *rgDestDirtyRects,
-        __inout_ecount(1) IDirect3DSurface9 *pD3DSysMemSurface,
+        __inout_ecount(1) QkSurfaceHandle *pD3DSysMemSurface,
         bool fCopySourceToSysMemSurface
         );
     
@@ -648,7 +648,7 @@ private:
         UINT uWidth,
         UINT uHeight,
         bool fCanCreateFromBits,
-        __deref_out_ecount(1) IDirect3DSurface9** ppD3DSysMemSurface
+        __deref_out_ecount(1) QkSurfaceHandle** ppD3DSysMemSurface
         );
 
 protected:
@@ -675,17 +675,17 @@ private:
 
     #if DBG
         void AssertSysMemSurfaceDescriptionNotChanged(
-            __in_ecount(1) IDirect3DSurface9 *pD3DSysMemSurface,
+            __in_ecount(1) QkSurfaceHandle *pD3DSysMemSurface,
             UINT Width,
             UINT Height
             );
 
         void AssertSysMemTextureDescriptionNotChanged(
-            __in_ecount(1) IDirect3DTexture9 *pD3DSysMemTexture
+            __in_ecount(1) QkTextureHandle *pD3DSysMemTexture
             );
     #else
         MIL_FORCEINLINE void AssertSysMemSurfaceDescriptionNotChanged(
-            __in_ecount(1) IDirect3DSurface9 *pD3DSysMemSurface,
+            __in_ecount(1) QkSurfaceHandle *pD3DSysMemSurface,
             UINT Width,
             UINT Height
             )
@@ -696,7 +696,7 @@ private:
         }
 
         MIL_FORCEINLINE void AssertSysMemTextureDescriptionNotChanged(
-            __in_ecount(1) IDirect3DTexture9 *pD3DSysMemTexture
+            __in_ecount(1) QkTextureHandle *pD3DSysMemTexture
             )
         {
             UNREFERENCED_PARAMETER(pD3DSysMemTexture);
@@ -741,7 +741,7 @@ private:
                                             // create texture with
 
     void *m_pvReferencedSystemBits;       // pointer to the bits that the bitmap had during the last lock.
-    IDirect3DSurface9* m_pD3DSysMemRefSurface; // cache of system memory surface that references the bitmap bits
+    QkSurfaceHandle* m_pD3DSysMemRefSurface; // cache of system memory surface that references the bitmap bits
 
     CHwBitmapColorSource *m_pbcsRealizationSources;     // A list of realized
                                                         // Hw color source that

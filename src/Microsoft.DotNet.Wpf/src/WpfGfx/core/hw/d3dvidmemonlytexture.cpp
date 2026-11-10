@@ -38,7 +38,7 @@ CD3DVidMemOnlyTexture::Create(
 {
     HRESULT hr = S_OK;
 
-    IDirect3DTexture9 *pD3DTexture = NULL;
+    QkTextureHandle *pD3DTexture = NULL;
     
     Assert(pSurfDesc->Pool == D3DPOOL_DEFAULT);
 
@@ -82,7 +82,7 @@ Cleanup:
 
 HRESULT
 CD3DVidMemOnlyTexture::Create(
-    __inout_ecount(1) IDirect3DTexture9 *pD3DExistingTexture,
+    __inout_ecount(1) QkTextureHandle *pD3DExistingTexture,
     bool fIsEvictable,
     __inout_ecount(1) CD3DDeviceLevel1 *pDevice,
     __deref_out_ecount(1) CD3DVidMemOnlyTexture **ppVidMemOnlyTexture
@@ -157,7 +157,7 @@ CD3DVidMemOnlyTexture::~CD3DVidMemOnlyTexture()
 HRESULT 
 CD3DVidMemOnlyTexture::Init(
     __inout_ecount(1) CD3DResourceManager *pResourceManager,
-    __inout_ecount(1) IDirect3DTexture9 *pD3DTexture
+    __inout_ecount(1) QkTextureHandle *pD3DTexture
     )
 {
     HRESULT hr = S_OK;

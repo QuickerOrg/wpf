@@ -37,7 +37,7 @@
 
 HRESULT
 CacheHwTextureOnBitmap(
-    __inout_ecount(1) IDirect3DTexture9 *pTexture,
+    __inout_ecount(1) QkTextureHandle *pTexture,
     __inout_ecount(1) IWGXBitmap *pBitmap,
     __inout_ecount(1) CD3DDeviceLevel1 *pDevice
     )
@@ -148,7 +148,7 @@ Cleanup:
 
 HRESULT
 ReadRenderTargetIntoSysMemBuffer(
-    __in IDirect3DSurface9 *pSourceSurface,
+    __in QkSurfaceHandle *pSourceSurface,
     __in const CMilRectU &rcCopy,
     MilPixelFormat::Enum fmtOut,
     UINT uStrideOut,
@@ -156,6 +156,9 @@ ReadRenderTargetIntoSysMemBuffer(
     __out_bcount_full(cbBufferOut) BYTE *pbBufferOut
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("ReadRenderTargetIntoSysMemBuffer");
+#else
     HRESULT hr = S_OK;
 
     const UINT uBitsPerPixel = GetPixelFormatSize(fmtOut);
@@ -167,9 +170,9 @@ ReadRenderTargetIntoSysMemBuffer(
     IDirect3DDevice9 *pIDevice = NULL;
     IDirect3DDevice9Ex *pIDeviceEx = NULL;
 
-    IDirect3DTexture9 *pD3DLockableTexture = NULL;
-    IDirect3DSurface9 *pD3DLockableSurface = NULL;
-    IDirect3DSurface9 *pD3DVidMemCopySurface = NULL;
+    QkTextureHandle *pD3DLockableTexture = NULL;
+    QkSurfaceHandle *pD3DLockableSurface = NULL;
+    QkSurfaceHandle *pD3DVidMemCopySurface = NULL;
 
     if (   rcCopy.left > SURFACE_RECT_MAX 
         || rcCopy.right > SURFACE_RECT_MAX 
@@ -332,6 +335,7 @@ Cleanup:
     ReleaseInterface(pIDeviceEx);
 
     RRETURN(hr);
+#endif
 }
 
 //+----------------------------------------------------------------------------

@@ -29,7 +29,7 @@ public:
     override HRESULT UpdateSurface(
         __in UINT cDirtyRects,
         __in_ecount(cDirtyRects) const CMilRectU *prgDirtyRects,
-        __in_ecount(1) IDirect3DSurface9 *pISrcSurface
+        __in_ecount(1) QkSurfaceHandle *pISrcSurface
         );
 
     override HRESULT Realize(

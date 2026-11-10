@@ -174,7 +174,7 @@ CHwVidMemTextureManager::ReCreateAndLockSysMemSurface(
     Assert(!m_fDBGSysMemSurfaceIsLocked);
 #endif
 
-    IDirect3DSurface9 *pID3DSysMemSurface = NULL;
+    QkSurfaceHandle *pID3DSysMemSurface = NULL;
 
     //
     // Create the surface
@@ -277,7 +277,7 @@ CHwVidMemTextureManager::PushBitsToVidMemTexture()
 {
     HRESULT hr = S_OK;
 
-    IDirect3DSurface9 *pD3DVidMemSurface = NULL;
+    QkSurfaceHandle *pD3DVidMemSurface = NULL;
 
     Assert(m_pSysMemSurface->IsValid());
 

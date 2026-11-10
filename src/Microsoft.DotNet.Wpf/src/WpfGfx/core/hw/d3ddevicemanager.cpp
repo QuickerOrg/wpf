@@ -925,7 +925,32 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
         pPresentParams->BackBufferWidth=1; pPresentParams->BackBufferHeight=1;
         pPresentParams->SwapEffect=D3DSWAPEFFECT_COPY; pPresentParams->hDeviceWindow=hwnd;
     }
-    return CD3DDeviceLevel1::Create(nullptr, pDisplay, nullptr, 0, ppDeviceLevel1);
+    CGuard<CCriticalSection> guard(m_csManagement);
+    if(pDisplay->DisplaySet()->DangerousHasDisplayStateChanged()) return WGXERR_DISPLAYSTATEINVALID;
+    if(!m_pDisplaySet) { m_pDisplaySet=pDisplay->DisplaySet(); m_pDisplaySet->AddRef(); }
+    if(m_pDisplaySet!=pDisplay->DisplaySet()) return WGXERR_DISPLAYSTATEINVALID;
+    m_fD3DLoaded=true;
+    D3DDeviceCreationParameters params={};
+    params.AdapterOrdinal=pDisplay->GetDisplayIndex(); params.MasterAdapterOrdinal=params.AdapterOrdinal;
+    params.DeviceType=D3DDEVTYPE_HAL; params.NumberOfAdaptersInGroup=1; params.RTInitFlags=dwFlags;
+    HRESULT hr=GetAvailableDevice(&params,ppDeviceLevel1);
+    if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE reuse manager device\n"); return hr; }
+    // 与 B 一样由 manager 记录可用/不可用分区、引用和失效通知；不按窗口创建设备。
+    hr=m_rgDeviceList.ReserveSpace(1); if(FAILED(hr)) return hr;
+#if DBG
+    m_fDbgCreatingNewDevice=true;
+#endif
+    hr=CD3DDeviceLevel1::Create(nullptr,pDisplay,this,0,ppDeviceLevel1);
+#if DBG
+    m_fDbgCreatingNewDevice=false;
+#endif
+    if(FAILED(hr)) return hr;
+    UINT last=m_rgDeviceList.GetCount(); m_rgDeviceList.SetCount(last+1);
+    if(m_iFirstUnusable<last) m_rgDeviceList[last]=m_rgDeviceList[m_iFirstUnusable];
+    auto &entry=m_rgDeviceList[m_iFirstUnusable++];
+    entry.pDeviceLevel1=*ppDeviceLevel1;entry.CreateParams=params;entry.fIsDeviceLost=false;
+    ++m_cCallers;
+    return S_OK;
 #else
 
     HRESULT hr = S_OK;

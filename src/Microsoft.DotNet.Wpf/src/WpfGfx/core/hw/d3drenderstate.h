@@ -344,7 +344,7 @@ public:
 
     MIL_FORCEINLINE HRESULT SetTexture(
         DWORD dwStage,
-        __in_ecount_opt(1) IDirect3DBaseTexture9 *pTexture
+        __in_ecount_opt(1) QkBaseTextureHandle *pTexture
         )
     {
         return m_pStateManager->SetTextureInline(
@@ -354,7 +354,7 @@ public:
     }
 
     MIL_FORCEINLINE HRESULT SetVertexShader(
-        __in_ecount_opt(1) IDirect3DVertexShader9 *pVertexShader
+        __in_ecount_opt(1) QkVertexShaderHandle *pVertexShader
         )
     {
         return m_pStateManager->SetVertexShaderInline(
@@ -363,7 +363,7 @@ public:
     }
 
     MIL_FORCEINLINE HRESULT SetPixelShader(
-        __in_ecount_opt(1) IDirect3DPixelShader9 *pPixelShader
+        __in_ecount_opt(1) QkPixelShaderHandle *pPixelShader
         )
     {
         return m_pStateManager->SetPixelShaderInline(
@@ -594,7 +594,7 @@ private:
     BOOL m_fCanDrawText;
     BOOL m_fDrawTextUsingPS20;
 
-    IDirect3DPixelShader9* m_pPixelShaders[PXS_NUM];
+    QkPixelShaderHandle* m_pPixelShaders[PXS_NUM];
     const FilterMode* m_pTextFilterMode;
 
     HRESULT InitPixelShaders();

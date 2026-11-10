@@ -32,7 +32,7 @@ public:
 #endif
     static HRESULT Create(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
-        __inout_ecount(1) IDirect3DSurface9 *pD3DSurface,
+        __inout_ecount(1) QkSurfaceHandle *pD3DSurface,
         __deref_out_ecount(1) CD3DSurface **ppSurface
         );
 
@@ -49,7 +49,7 @@ public:
         )
     {
 #if QUICKER_WPF_D3D11_FACADE
-        return QkFacadeUnimpl("CD3DSurface::LockRect");
+        return m_pD3DSurface?m_pD3DSurface->LockRect(pLockedRect,pRect,Flags):QkFacadeUnimpl("Surface.LockStandalone");
 #else
         return ID3DSurface()->LockRect(pLockedRect, pRect, Flags);
 #endif
@@ -59,19 +59,19 @@ public:
         )
     {
 #if QUICKER_WPF_D3D11_FACADE
-        return QkFacadeUnimpl("CD3DSurface::UnlockRect");
+        return m_pD3DSurface?m_pD3DSurface->UnlockRect():E_UNEXPECTED;
 #else
         return ID3DSurface()->UnlockRect();
 #endif
     }
 
 
-    __out_ecount_opt(1) IDirect3DSurface9 * GetD3DSurfaceNoAddRef() const
+    __out_ecount_opt(1) QkSurfaceHandle * GetD3DSurfaceNoAddRef() const
     {
         return m_pD3DSurface;
     }
 
-    __out_ecount(1) IDirect3DSurface9 * ID3DSurface() const
+    __out_ecount(1) QkSurfaceHandle * ID3DSurface() const
     {
         Assert(m_pD3DSurface);
         return m_pD3DSurface;
@@ -108,7 +108,7 @@ public:
         );
 
 protected:
-    CD3DSurface(__inout_ecount(1) IDirect3DSurface9 * pD3DSurface);
+    CD3DSurface(__inout_ecount(1) QkSurfaceHandle * pD3DSurface);
     ~CD3DSurface();
 
     HRESULT Init(
@@ -135,7 +135,7 @@ protected:
     // Pointer to the actual D3D resource.
     //  The pointer is constant to help enforce the modification restrictions
     //  of CD3DResource objects.
-    IDirect3DSurface9 * const m_pD3DSurface;
+    QkSurfaceHandle * const m_pD3DSurface;
 
     D3DSURFACE_DESC m_d3dsd;
 };

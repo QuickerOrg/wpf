@@ -338,11 +338,15 @@ CacheTextureOnBitmap(
         //
         Assert(m_pIMixerTexture);
 
+#if QUICKER_WPF_D3D11_FACADE
+        IFC(QkFacadeUnimpl("Media.CacheLegacyTexture"));
+#else
         IFC(CacheHwTextureOnBitmap(
             m_pIMixerTexture,
             m_pBitmap,
             m_pRenderDevice
             ));
+#endif
 
         m_fTextureCachedOnBitmap = true;
     }

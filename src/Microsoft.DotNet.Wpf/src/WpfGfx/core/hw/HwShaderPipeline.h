@@ -52,8 +52,8 @@ public:
         __in_ecount(uNumPipelineItems) const HwPipelineItem * rgShaderPipelineItems,
         UINT uNumPipelineItems,
         __in_ecount(1) CD3DDeviceLevel1 *pDevice,
-        __in_ecount(1) IDirect3DVertexShader9 *pVertexShader,
-        __in_ecount(1) IDirect3DPixelShader9  *pPixelShader,
+        __in_ecount(1) QkVertexShaderHandle *pVertexShader,
+        __in_ecount(1) QkPixelShaderHandle  *pPixelShader,
         __deref_out_ecount(1) CHwPipelineShader **ppHwShader
         DBG_COMMA_PARAM(__inout_ecount_opt(1) PCSTR &pDbgHLSLSource)
         );
@@ -101,8 +101,8 @@ private:
     HRESULT Init(         
         __in_ecount(uNumPipelineItems) const HwPipelineItem * rgShaderPipelineItems,
         UINT uNumPipelineItems,
-        __in_ecount(1) IDirect3DVertexShader9 *pVertexShader,
-        __in_ecount(1) IDirect3DPixelShader9  *pPixelShader
+        __in_ecount(1) QkVertexShaderHandle *pVertexShader,
+        __in_ecount(1) QkPixelShaderHandle  *pPixelShader
         DBG_COMMA_PARAM(__inout_ecount_opt(1) PCSTR &pDbgHLSLSource)
         );
 
@@ -126,8 +126,8 @@ private:
 private:
     CD3DDeviceLevel1 * const m_pDeviceNoRef;
 
-    IDirect3DVertexShader9 *m_pVertexShader;
-    IDirect3DPixelShader9  *m_pPixelShader;
+    QkVertexShaderHandle *m_pVertexShader;
+    QkPixelShaderHandle  *m_pPixelShader;
 
 #if DBG
     PCSTR m_pDbgHLSLSource;

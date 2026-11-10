@@ -41,7 +41,7 @@ public:
     DECLARE_METERHEAP_ALLOC(ProcessHeap, Mt(CD3DGlyphBank));
 
     CD3DGlyphBankTemporarySurface(
-        __in_ecount(1) IDirect3DSurface9* pSurface,
+        __in_ecount(1) QkSurfaceHandle* pSurface,
         UINT uWidth,
         UINT uHeight,
         __in_ecount(1) IMILPoolManager *pManager
@@ -51,7 +51,7 @@ public:
 
     UINT GetWidth() const {return m_uWidth;}
     UINT GetHeight() const {return m_uHeight;}
-    IDirect3DSurface9* GetSurfaceNoAddref() const {return m_pSurface;}
+    QkSurfaceHandle* GetSurfaceNoAddref() const {return m_pSurface;}
 
     bool IsExpensive() const
     {
@@ -70,7 +70,7 @@ private:
 #endif
 
 private:
-    IDirect3DSurface9 * const m_pSurface;
+    QkSurfaceHandle * const m_pSurface;
     UINT const m_uWidth;
     UINT const m_uHeight;
 };
@@ -95,8 +95,8 @@ public:
     DECLARE_METERHEAP_CLEAR(ProcessHeap, Mt(CD3DGlyphBank));
 
     CD3DGlyphTank(
-        __in_ecount(1) IDirect3DTexture9* pTexture,
-        __in_ecount(1) IDirect3DSurface9* pSurface,
+        __in_ecount(1) QkTextureHandle* pTexture,
+        __in_ecount(1) QkSurfaceHandle* pSurface,
         UINT uTankWidth,
         UINT uTankHeight,
         __in_ecount(1) IMILPoolManager *pManager
@@ -121,8 +121,8 @@ public:
     // accessors
     //
 
-    IDirect3DTexture9* GetTextureNoAddref() const {return m_pTexture;}
-    IDirect3DSurface9* GetSurfaceNoAddref() const {return m_pSurface;}
+    QkTextureHandle* GetTextureNoAddref() const {return m_pTexture;}
+    QkSurfaceHandle* GetSurfaceNoAddref() const {return m_pSurface;}
     float GetWidTextureRc() const {return m_rWidthReciprocal;}
     float GetHeiTextureRc() const {return m_rHeightReciprocal;}
     UINT GetLoad() const {return m_nPeakLoad - m_nLostLoad;}
@@ -165,8 +165,8 @@ private:
     // Pointers to the actual D3D resources.
     //  These pointers are constant to help enforce the modification
     //  restrictions of CD3DResource objects.
-    IDirect3DTexture9 * const m_pTexture;
-    IDirect3DSurface9 * const m_pSurface;
+    QkTextureHandle * const m_pTexture;
+    QkSurfaceHandle * const m_pSurface;
 
     UINT m_uWidth, m_uHeight;
     float m_rWidthReciprocal, m_rHeightReciprocal;
@@ -261,7 +261,7 @@ private:
     HRESULT EnsureTempSurface(
         UINT uWidth,
         UINT uHeight,
-        __deref_out_ecount(1) IDirect3DSurface9 **ppTempSurface
+        __deref_out_ecount(1) QkSurfaceHandle **ppTempSurface
         );
 
 private:

@@ -327,8 +327,8 @@ HRESULT CD3DGlyphBank::RectFillAlpha(
     UINT uHeight = srcRect.bottom - srcRect.top;
 
     RECT rcTemp = {0, 0, uWidth, uHeight};
-    IDirect3DSurface9* pTankSurface = pTank->GetSurfaceNoAddref();
-    IDirect3DSurface9* pTempSurface = NULL;
+    QkSurfaceHandle* pTankSurface = pTank->GetSurfaceNoAddref();
+    QkSurfaceHandle* pTempSurface = NULL;
 
     IFC( EnsureTempSurface(uWidth, uHeight, &pTempSurface) );
 
@@ -507,14 +507,14 @@ Cleanup:
 HRESULT CD3DGlyphBank::EnsureTempSurface(
     UINT uWidth,
     UINT uHeight,
-    __deref_out_ecount(1) IDirect3DSurface9 **ppTempSurface
+    __deref_out_ecount(1) QkSurfaceHandle **ppTempSurface
     )
 {
     Assert(ppTempSurface);
 
     HRESULT hr = S_OK;
-    IDirect3DTexture9 *pTexture = NULL;
-    IDirect3DSurface9 *pSurface = NULL;
+    QkTextureHandle *pTexture = NULL;
+    QkSurfaceHandle *pSurface = NULL;
 
     if (m_pTempSurface == NULL
         || !m_pTempSurface->IsValid()
@@ -583,8 +583,8 @@ CD3DGlyphBank::CreateTank(UINT uHeight, BOOL fPersistent)
     Assert(uHeight <= m_uMaxTankHeight);
     AssertMsg(!(uHeight & (uHeight-1)), "CreateTank: height is not a power of two");
 
-    IDirect3DSurface9 *pSurface = NULL;
-    IDirect3DTexture9 *pTexture = NULL;
+    QkSurfaceHandle *pSurface = NULL;
+    QkTextureHandle *pTexture = NULL;
     CD3DGlyphTank* pTank = 0;
 
     D3DSURFACE_DESC sd;
@@ -730,8 +730,8 @@ CD3DGlyphBank::ReleaseLazyTanks()
 //
 //------------------------------------------------------------------------------
 CD3DGlyphTank::CD3DGlyphTank(
-    __in_ecount(1) IDirect3DTexture9* pTexture,
-    __in_ecount(1) IDirect3DSurface9* pSurface,
+    __in_ecount(1) QkTextureHandle* pTexture,
+    __in_ecount(1) QkSurfaceHandle* pSurface,
     UINT widTank,
     UINT heiTank,
     __in_ecount(1) IMILPoolManager *pManager
@@ -963,8 +963,8 @@ void CD3DGlyphTank::ReleaseD3DResources()
     Assert(IsValid() == m_fResourceValid);
 
     // This context is protected so it is safe to release the D3D resources
-    ReleaseInterface((*const_cast<IDirect3DSurface9 **>(&m_pSurface)));
-    ReleaseInterface((*const_cast<IDirect3DTexture9 **>(&m_pTexture)));
+    ReleaseInterface((*const_cast<QkSurfaceHandle **>(&m_pSurface)));
+    ReleaseInterface((*const_cast<QkTextureHandle **>(&m_pTexture)));
 
     return;
 }
@@ -980,7 +980,7 @@ void CD3DGlyphTank::ReleaseD3DResources()
 //
 //------------------------------------------------------------------------------
 CD3DGlyphBankTemporarySurface::CD3DGlyphBankTemporarySurface(
-    __in_ecount(1) IDirect3DSurface9* pSurface,
+    __in_ecount(1) QkSurfaceHandle* pSurface,
     UINT uWidth,
     UINT uHeight,
     __in_ecount(1) IMILPoolManager *pManager
@@ -1020,7 +1020,7 @@ CD3DGlyphBankTemporarySurface::~CD3DGlyphBankTemporarySurface()
 //------------------------------------------------------------------------------
 void CD3DGlyphBankTemporarySurface::ReleaseD3DResources()
 {
-    ReleaseInterface((*const_cast<IDirect3DSurface9 **>(&m_pSurface)));
+    ReleaseInterface((*const_cast<QkSurfaceHandle **>(&m_pSurface)));
 }
 
 
