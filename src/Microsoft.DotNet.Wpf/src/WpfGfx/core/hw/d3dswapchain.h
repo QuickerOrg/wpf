@@ -60,6 +60,7 @@ public:
         m_facadeSwapChain.Reset();
         if(m_facadeState) m_facadeState->context->Flush();
     }
+    bool m_facadeGdiPresent = false; // flip 被 HWND 关联拒绝时，仅呈现搬运降级，仍由 D3D11 绘制。
     UINT m_facadeSyncInterval = 0;
     mutable bool m_facadeFirstPresent = true;
     HRESULT ResizeFacade(CD3DResourceManager *manager, UINT width, UINT height);

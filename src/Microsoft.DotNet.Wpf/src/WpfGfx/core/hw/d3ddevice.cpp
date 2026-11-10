@@ -3480,7 +3480,7 @@ CD3DDeviceLevel1::Present(
         QkFacadeTrace(dirty.empty()?"QK-FACADE Present DXGI flip full\n":"QK-FACADE Present DXGI flip dirty\n");
         return m_facade->RecordPresent();
     }
-    if(!(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return WGXERR_NEED_RECREATE_AND_PRESENT;
+    if(!pD3DSwapChain->m_facadeGdiPresent && !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return WGXERR_NEED_RECREATE_AND_PRESENT;
     bool processed=false; return PresentWithGDI(pD3DSwapChain,prcSource,prcDest,pMILDC,pDirtyRegion,&processed);
 #else
 
@@ -3886,6 +3886,20 @@ CD3DDeviceLevel1::PresentWithGDI(
     HRESULT hr=pD3DSwapChain->GetBackBuffer(0,&surface); if(FAILED(hr))return hr;
     HDC dc=nullptr; hr=surface->GetDC(&dc);
     if(SUCCEEDED(hr)) {
+        if(pD3DSwapChain->m_facadeGdiPresent && !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) {
+            // GDI 只搬运 GPU 已绘制的像素；遵守原窗口目标的源/目标矩形，不更改 HWND 样式。
+            RECT source={0,0,static_cast<LONG>(surface->Desc().Width),static_cast<LONG>(surface->Desc().Height)};
+            RECT dest=source; if(prcSource) source=*prcSource; if(prcDest) dest=*prcDest;
+            HDC front=::GetDC(pMILDC->GetHWND());
+            LONGLONG started=QkFacadeClock();
+            hr=front?(BitBlt(front,dest.left,dest.top,source.right-source.left,source.bottom-source.top,dc,source.left,source.top,SRCCOPY)?S_OK:HRESULT_FROM_WIN32(GetLastError())):HRESULT_FROM_WIN32(GetLastError());
+            if(front) ::ReleaseDC(pMILDC->GetHWND(),front);
+            QkFacadeTiming("GpuGdiPresent",started,hr);
+            HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr)) hr=release;
+            surface->Release(); *pfPresentProcessed=SUCCEEDED(hr);
+            if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE Present GPU-GDI\n"); hr=m_facade->RecordPresent(); }
+            return hr;
+        }
         SIZE size={static_cast<LONG>(surface->Desc().Width),static_cast<LONG>(surface->Desc().Height)};
         POINT src={0,0}; BLENDFUNCTION blend=pMILDC->GetBlendFunction();
         // 使用 CMILDeviceContext 已计算的 constant/per-pixel alpha 和色键组合。

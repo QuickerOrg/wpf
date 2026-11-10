@@ -417,6 +417,13 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
         // WPF 保留目标独立于轮换的 DXGI 后缓冲，局部更新只做 GPU 拷贝。
         if(SUCCEEDED(hr)) hr=factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain);
         if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
+        if(hr==E_ACCESSDENIED && SUCCEEDED(state->DeviceStatus())) {
+            // 旧 flip 的延迟销毁或多个显示目标关联同 HWND 时，不能让整窗转成 CPU 光栅化。
+            s->m_facadeSwapChain.Reset(); state->context->Flush();
+            s->m_facadeGdiPresent=true;
+            QkFacadeTrace("QK-FACADE fallback=GPU-GDI reason=flip-access-denied\n");
+            hr=S_OK;
+        }
         char line[240]; StringCchPrintfA(line,240,"QK-FACADE DXGI flip hwnd=%p size=%ux%u hr=0x%08x\n",opaqueHwnd,width,height,hr); QkFacadeTrace(line);
     }
     // 物理纹理均为 BGRA8，但逻辑 XRGB/ARGB 语义必须保留，否则原文字路径会错误禁用 ClearType。
@@ -453,6 +460,11 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
             QkFacadeTiming("ResizeRecreate",recreateStarted,hr,width);
             char line[192]; StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE resize-recreate hwnd=%p hr=0x%08x\n",oldDesc.OutputWindow,hr);QkFacadeTrace(line);
         }
+    }
+    if(hr==E_ACCESSDENIED && SUCCEEDED(m_facadeState->DeviceStatus())) {
+        DetachFacade(); m_facadeGdiPresent=true;
+        QkFacadeTrace("QK-FACADE fallback=GPU-GDI reason=resize-access-denied\n");
+        hr=S_OK;
     }
     if(FAILED(hr)) return hr;
     m_facadePresentHistory.Reset();

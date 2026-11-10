@@ -432,6 +432,12 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
 }
 HRESULT QkD3D11State::WaitForVBlank()
 {
+    // 默认关闭的诊断候选：借用 WPF 已有的无硬件 vblank 调度回退，不改托管时钟。
+    WCHAR option[2]={};
+    if(GetEnvironmentVariableW(L"QUICKER_FACADE_NO_VBLANK_WAIT",option,ARRAYSIZE(option))==1 && option[0]==L'1') {
+        QkFacadeTrace("QK-FACADE diagnostic vblank-wait bypass\n");
+        return WGXERR_NO_HARDWARE_DEVICE;
+    }
     ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
     HRESULT hr=device.As(&dxgi);
     if(SUCCEEDED(hr)) hr=dxgi->GetAdapter(&adapter);
