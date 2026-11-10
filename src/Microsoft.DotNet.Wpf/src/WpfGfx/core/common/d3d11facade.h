@@ -92,6 +92,7 @@ public:
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3DBlob> code;
     UINT sampledMask = 0;
+    UINT builtinResource = 0;
     std::map<DWORD,ComPtr<ID3D11InputLayout>> layouts;
     ULONGLONG generation = 0;
     ULONG AddRef() { return InterlockedIncrement(&m_refs); }

@@ -3,10 +3,17 @@ static DXGI_FORMAT QkFormat(D3DFORMAT f)
 {
     switch(f) {
     case D3DFMT_X8R8G8B8: return DXGI_FORMAT_B8G8R8X8_UNORM;
-    case D3DFMT_A8R8G8B8: case D3DFMT_A8: case D3DFMT_L8: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case D3DFMT_A8R8G8B8: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case D3DFMT_A8: return DXGI_FORMAT_A8_UNORM;
+    case D3DFMT_L8: return DXGI_FORMAT_R8_UNORM;
     case D3DFMT_A32B32G32R32F: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     default: return DXGI_FORMAT_UNKNOWN;
     }
+}
+
+static UINT QkPixelSize(D3DFORMAT format)
+{
+    return format==D3DFMT_A8 ? 1 : D3DFormatSize(format);
 }
 
 HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTextureHandle **out)
@@ -56,7 +63,7 @@ HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD fla
     RECT rc=rect?*rect:RECT{0,0,static_cast<LONG>(desc.Width),static_cast<LONG>(desc.Height)};
     if(rc.left<0 || rc.top<0 || rc.right<=rc.left || rc.bottom<=rc.top ||
         static_cast<UINT>(rc.right)>desc.Width || static_cast<UINT>(rc.bottom)>desc.Height) return E_INVALIDARG;
-    UINT bpp=D3DFormatSize(desc.Format),pitch=desc.Width*bpp;
+    UINT bpp=QkPixelSize(desc.Format),pitch=desc.Width*bpp;
     if(!bpp || static_cast<ULONGLONG>(pitch)*desc.Height>UINT_MAX) return E_INVALIDARG;
     if(!reference && pixels.empty()) pixels.resize(static_cast<size_t>(pitch)*desc.Height);
     BYTE *data=reference?reference:pixels.data();
@@ -72,7 +79,7 @@ HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD fla
         for(UINT y=0;y<desc.Height;++y) {
             auto row=static_cast<BYTE*>(map.pData)+y*map.RowPitch;
             if(desc.Format==D3DFMT_A8 || desc.Format==D3DFMT_L8) {
-                for(UINT x=0;x<desc.Width;++x) data[y*pitch+x]=row[x*4+(desc.Format==D3DFMT_A8?3:0)];
+                memcpy(data+y*pitch,row,pitch);
             } else memcpy(data+y*pitch,row,pitch);
         }
         context->Unmap(staging.Get(),mip);
@@ -85,9 +92,9 @@ HRESULT QkSurfaceHandle::UnlockRect()
     if(!locked) return E_INVALIDARG;
     locked=false;
     if(texture && !(lockFlags&D3DLOCK_READONLY)) {
-        UINT pitch=desc.Width*D3DFormatSize(desc.Format);
+        UINT pitch=desc.Width*QkPixelSize(desc.Format);
         BYTE *data=reference?reference:pixels.data();
-        return UploadRect(lockRect,data+lockRect.top*pitch+lockRect.left*D3DFormatSize(desc.Format),pitch);
+        return UploadRect(lockRect,data+lockRect.top*pitch+lockRect.left*QkPixelSize(desc.Format),pitch);
     }
     return S_OK;
 }
@@ -96,17 +103,8 @@ HRESULT QkSurfaceHandle::UploadRect(const RECT &rect,const BYTE *data,UINT pitch
     if(!texture || !data) return E_INVALIDARG;
     D3D11_BOX box={static_cast<UINT>(rect.left),static_cast<UINT>(rect.top),0,
         static_cast<UINT>(rect.right),static_cast<UINT>(rect.bottom),1};
-    // D3D9 A8 的 RGB 为 1，L8 的 RGB 为亮度且 alpha 为 1；DXGI 单通道默认 swizzle 不同。
-    // 只展开本次脏矩形，保留逻辑锁定格式，复用上传镜像。
-    if(desc.Format==D3DFMT_A8 || desc.Format==D3DFMT_L8) {
-        UINT w=box.right-box.left,h=box.bottom-box.top;
-        uploadPixels.resize(static_cast<size_t>(w)*h*4);
-        for(UINT y=0;y<h;++y) for(UINT x=0;x<w;++x) {
-            BYTE value=data[y*pitch+x]; auto out=uploadPixels.data()+(static_cast<size_t>(y)*w+x)*4;
-            out[0]=out[1]=out[2]=desc.Format==D3DFMT_A8?255:value; out[3]=desc.Format==D3DFMT_A8?value:255;
-        }
-        context->UpdateSubresource(texture.Get(),mip,&box,uploadPixels.data(),w*4,0);
-    } else context->UpdateSubresource(texture.Get(),mip,&box,data,pitch,0);
+    // A8/R8 保留单字节 atlas；文字 shader 在采样边界恢复 D3D9 通道语义。
+    context->UpdateSubresource(texture.Get(),mip,&box,data,pitch,0);
     QkFacadeTrace("QK-FACADE upload texture dirty rectangle\n");
     return S_OK;
 }
@@ -276,7 +274,7 @@ static std::string QkOperation(DWORD op,const std::string &a,const std::string &
 HRESULT QkD3D11State::ApplyShaders()
 {
     ComPtr<QkFacadeShader> vs=m_boundVS,ps=m_boundPS;
-    if(!!vs!=!!ps) return QkFacadeUnimpl("Draw.mixedShaderStages");
+    if(vs && !ps) return QkFacadeUnimpl("Draw.mixedShaderStages");
     if(!vs || !ps) {
         UINT count=(m_fvf&D3DFVF_TEXCOUNT_MASK)>>D3DFVF_TEXCOUNT_SHIFT;
         std::string source="cbuffer Target:register(b0){float4 size;}; struct V{float4 p:SV_Position;float4 c:COLOR0;";
@@ -288,7 +286,8 @@ HRESULT QkD3D11State::ApplyShaders()
         source+="return v;}";
         for(UINT n=0;n<8;++n) source+="Texture2D tex"+std::to_string(n)+":register(t"+std::to_string(n)+");SamplerState sam"+std::to_string(n)+":register(s"+std::to_string(n)+");";
         source+="float4 PS(V v):SV_Target{float4 c=v.c;";
-        for(UINT n=0;n<8 && m_stages[n][D3DTSS_COLOROP]!=D3DTOP_DISABLE;++n) {
+        // 显式文字 PS 不读取固定功能 texture stage；只需生成配套 VS。
+        for(UINT n=0;!ps && n<8 && m_stages[n][D3DTSS_COLOROP]!=D3DTOP_DISABLE;++n) {
             auto &st=m_stages[n];
             if(st[D3DTSS_TEXTURETRANSFORMFLAGS]!=D3DTTFF_DISABLE) return QkFacadeUnimpl("FF.textureTransform");
             bool texture=false;
@@ -310,7 +309,7 @@ HRESULT QkD3D11State::ApplyShaders()
         }
         source+="return c;}";
         HRESULT hr=Compile(source.data(),static_cast<UINT>(source.size()),true,&vs); if(FAILED(hr)) return hr;
-        hr=Compile(source.data(),static_cast<UINT>(source.size()),false,&ps); if(FAILED(hr)) return hr;
+        if(!ps) { hr=Compile(source.data(),static_cast<UINT>(source.size()),false,&ps); if(FAILED(hr)) return hr; }
     }
     ID3D11InputLayout *layout=nullptr; HRESULT hr=InputLayout(vs.Get(),&layout); if(FAILED(hr)) return hr;
     context->IASetInputLayout(layout); context->VSSetShader(vs->vs.Get(),nullptr,0); context->PSSetShader(ps->ps.Get(),nullptr,0);
@@ -365,7 +364,7 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     if(!src->texture) {
         if(!sameSize || !dst->texture || src->desc.Format!=dst->desc.Format) return E_INVALIDARG;
         BYTE *data=src->reference?src->reference:src->pixels.data(); if(!data) return E_UNEXPECTED;
-        UINT bpp=D3DFormatSize(src->desc.Format),pitch=src->desc.Width*bpp;
+        UINT bpp=QkPixelSize(src->desc.Format),pitch=src->desc.Width*bpp;
         HRESULT hr=dst->UploadRect(b,data+a.top*pitch+a.left*bpp,pitch);
         return FAILED(hr)?hr:DeviceStatus();
     }

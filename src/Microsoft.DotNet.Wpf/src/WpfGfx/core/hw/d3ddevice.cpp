@@ -32,6 +32,9 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#if QUICKER_WPF_D3D11_FACADE
+#include "d3d11-builtin-shaders.inl"
+#endif
 #include "../common/quicker-wheel-counters.h"
 #include "HwGraphicsCards.h"
 
@@ -331,8 +334,15 @@ CD3DDeviceLevel1::Init(
     m_fmtSupportFor32bppBGR=MilPixelFormat::BGR32bpp; m_fmtSupportFor32bppPBGRA=MilPixelFormat::PBGRA32bpp;
     m_multisampleTypeFor32bppBGR=m_multisampleTypeFor32bppPBGRA=D3DMULTISAMPLE_NONE;
     UINT support=0;
+    const UINT floatRequired=D3D11_FORMAT_SUPPORT_TEXTURE2D|D3D11_FORMAT_SUPPORT_RENDER_TARGET|D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+    m_fmtSupportFor128bppPRGBAFloat=SUCCEEDED(m_facade->device->CheckFormatSupport(DXGI_FORMAT_R32G32B32A32_FLOAT,&support))
+        && (support&floatRequired)==floatRequired ? MilPixelFormat::PRGBA128bppFloat : MilPixelFormat::Undefined;
     m_fSupportsD3DFMT_A8=SUCCEEDED(m_facade->device->CheckFormatSupport(DXGI_FORMAT_A8_UNORM,&support)) && (support&D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
     m_fSupportsD3DFMT_L8=SUCCEEDED(m_facade->device->CheckFormatSupport(DXGI_FORMAT_R8_UNORM,&support)) && (support&D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+    // 私有门面实验的格式覆盖入口，默认沿用原 A8 优先能力选择。
+    WCHAR glyphFormat[8]={};
+    if(GetEnvironmentVariableW(L"QUICKER_FACADE_GLYPH_FORMAT",glyphFormat,8) && wcscmp(glyphFormat,L"L8")==0)
+        m_fSupportsD3DFMT_A8=false;
     m_fSupportsD3DFMT_P8=false;
     m_RenderTargetTestStatusX8R8G8B8.hrTest=m_RenderTargetTestStatusX8R8G8B8.hrTestGetDC=S_OK;
     m_RenderTargetTestStatusA8R8G8B8.hrTest=m_RenderTargetTestStatusA8R8G8B8.hrTestGetDC=S_OK;
@@ -340,6 +350,7 @@ CD3DDeviceLevel1::Init(
     IGNORE_HR(AcquireIndex());
     hr=CD3DRenderState::Init(this,nullptr); if(FAILED(hr)) return hr;
     hr=InitSharedData(this); if(FAILED(hr)) return hr;
+    hr=m_glyphBank.Init(this, &m_resourceManager); if(FAILED(hr)) return hr;
     hr=CHwD3DIndexBuffer::Create(&m_resourceManager,this,20001*3*sizeof(WORD),&m_pHwIndexBuffer); if(FAILED(hr)) return hr;
     return CHwD3DVertexBuffer::Create(&m_resourceManager,this,20001*sizeof(CD3DVertexXYZDUV2),&m_pHwVertexBuffer);
 #else
@@ -2044,7 +2055,13 @@ CD3DDeviceLevel1::CreateAdditionalSwapChain(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    if (!pMILDC || !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return QkFacadeUnimpl("CreateAdditionalSwapChain.opaque");
+    if (!pMILDC || !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) {
+        HWND hwnd=pMILDC?pMILDC->GetHWND():nullptr;
+        WCHAR name[128]={};if(hwnd)GetClassNameW(hwnd,name,128);
+        char line[256];StringCchPrintfA(line,256,"QK-FACADE unsupported opaque hwnd=%p class=%ls size=%ux%u\n",hwnd,name,
+            pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight);QkFacadeTrace(line);
+        return QkFacadeUnimpl("CreateAdditionalSwapChain.opaque");
+    }
     return CD3DSwapChain::CreateFacade(&m_resourceManager,m_facade,pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight,ppSwapChain);
 #else
 
@@ -2847,7 +2864,18 @@ CD3DDeviceLevel1::SetRenderTargetForEffectPipeline(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::SetRenderTargetForEffectPipeline");
+    auto surface=pD3DSurface->ID3DSurface();
+    if(!surface || !surface->rtv) return E_INVALIDARG;
+    HRESULT hr=m_facade->BindTarget(surface->rtv.Get(),surface->desc.Width,surface->desc.Height);
+    if(FAILED(hr)) return hr;
+    m_desc=pD3DSurface->Desc(); m_pCurrentRenderTargetNoRef=pD3DSurface;
+    SetClipSet(false);
+    MilPointAndSizeL clip={0,0,static_cast<INT>(m_desc.Width),static_cast<INT>(m_desc.Height)};
+    ScissorRectChanged(&clip);
+    RECT scissor={0,0,static_cast<LONG>(m_desc.Width),static_cast<LONG>(m_desc.Height)};
+    m_facade->SetScissorRect(&scissor);
+    D3DVIEWPORT9 vp={0,0,m_desc.Width,m_desc.Height,0,1};
+    return m_facade->SetViewport(&vp);
 #else
 
     AssertDeviceEntry(*this);
@@ -4362,7 +4390,11 @@ CD3DDeviceLevel1::CreatePixelShaderFromResource(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CreatePixelShaderFromResource");
+    const char *source=QkBuiltinShader(uResourceId,false);
+    if(!source) return QkFacadeUnimpl("BuiltinShader.unknownResource");
+    HRESULT hr=m_facade->Compile(source,static_cast<UINT>(strlen(source)),false,ppPixelShader);
+    if(SUCCEEDED(hr)) (*ppPixelShader)->builtinResource=uResourceId;
+    return hr;
 #else
 
     HRESULT hr = S_OK;
@@ -4424,7 +4456,9 @@ CD3DDeviceLevel1::CreateVertexShaderFromResource(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateVertexShaderFromResource");
+    const char *source=QkBuiltinShader(uResourceId,true);
+    if(!source) return QkFacadeUnimpl("BuiltinShader.unknownResource");
+    return m_facade->Compile(source,static_cast<UINT>(strlen(source)),true,ppVertexShader);
 #else
 
     HRESULT hr = S_OK;
@@ -4653,9 +4687,7 @@ CD3DDeviceLevel1::RenderTexture(
     TextureBlendMode blendMode
     )
 {
-#if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::RenderTexture");
-#else
+
 
     AssertDeviceEntry(*this);
 
@@ -4759,7 +4791,6 @@ CD3DDeviceLevel1::RenderTexture(
 Cleanup:
     RRETURN(HandleDIE(hr));
 
-#endif
 }
 
 
@@ -6963,9 +6994,7 @@ DbgInjectDIE(
 HRESULT
 CD3DDeviceLevel1::PrepareShaderEffectPipeline(bool useVS30)
 {
-#if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::PrepareShaderEffectPipeline");
-#else
+
 
     HRESULT hr = S_OK;
     CD3DVertexXYZDUV2* pVertices = NULL;
@@ -7032,7 +7061,6 @@ Cleanup:
 
     RRETURN(HandleDIE(hr));
 
-#endif
 }
 
 
@@ -7049,9 +7077,7 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::SetPassThroughPixelShader()
 {
-#if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::SetPassThroughPixelShader");
-#else
+
 
     HRESULT hr = S_OK;
 
@@ -7065,7 +7091,6 @@ CD3DDeviceLevel1::SetPassThroughPixelShader()
 Cleanup:
     RRETURN(hr);
 
-#endif
 }
 
 //+-----------------------------------------------------------------------------

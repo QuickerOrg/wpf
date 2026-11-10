@@ -202,6 +202,10 @@ CMilPixelShaderDuce::GetHwPixelShaderEffectFromCache(
 
             if (FAILED(hr))
             {
+#if QUICKER_WPF_D3D11_FACADE
+                // 门面缺口必须显式失败，不能继承旧后端以直通 shader 吞掉效果失败的兜底。
+                IFC(hr);
+#endif
                 if (hr == E_OUTOFMEMORY || hr == D3DERR_OUTOFVIDEOMEMORY)
                 {
                     IFC(hr);

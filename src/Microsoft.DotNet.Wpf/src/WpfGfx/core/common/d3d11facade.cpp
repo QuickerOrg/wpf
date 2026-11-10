@@ -251,6 +251,9 @@ HRESULT QkD3D11State::SetVertexShader(QkVertexShaderHandle *p) {
 }
 HRESULT QkD3D11State::SetPixelShader(QkPixelShaderHandle *p) {
     if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    if(p && p->builtinResource) {
+        char line[96];StringCchPrintfA(line,96,"QK-FACADE bind builtin PS resource=%u\n",p->builtinResource);QkFacadeTrace(line);
+    }
     m_boundPS=p; return S_OK;
 }
 HRESULT QkD3D11State::SetDepthStencilSurface(QkSurfaceHandle *p) { return p ? QkFacadeUnimpl("SetDepthStencilSurface") : S_OK; }
@@ -408,7 +411,16 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
     if (flags != D3DCLEAR_TARGET) return QkFacadeUnimpl("Clear.depthStencil");
     if (!target) return E_UNEXPECTED;
     float rgba[] = {((color>>16)&255)/255.f, ((color>>8)&255)/255.f, (color&255)/255.f, (color>>24)/255.f};
-    if (!count) { context->ClearRenderTargetView(target.Get(), rgba); return DeviceStatus(); }
+    // D3D9 Clear 受 viewport/scissor 约束；D3D11 ClearRenderTargetView 不受约束。
+    // 局部文字更新时必须保留脏区外内容。
+    RECT clip={static_cast<LONG>(m_viewport.X),static_cast<LONG>(m_viewport.Y),
+        static_cast<LONG>(m_viewport.X+m_viewport.Width),static_cast<LONG>(m_viewport.Y+m_viewport.Height)};
+    if(m_states[D3DRS_SCISSORTESTENABLE]) IntersectRect(&clip,&clip,&m_scissor);
+    RECT bounds={0,0,static_cast<LONG>(width),static_cast<LONG>(height)};
+    if(!IntersectRect(&clip,&clip,&bounds)) return S_OK;
+    if(!count && EqualRect(&clip,&bounds)) { context->ClearRenderTargetView(target.Get(), rgba); return DeviceStatus(); }
+    D3DRECT all={clip.left,clip.top,clip.right,clip.bottom};
+    if(!count) {rects=&all;count=1;}
     auto savedVS=m_boundVS; auto savedPS=m_boundPS;
     DWORD savedStages[8][33]; memcpy(savedStages,m_stages,sizeof(m_stages));
     m_boundVS.Reset(); m_boundPS.Reset();
@@ -423,7 +435,9 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
     HRESULT hr = S_OK;
     for (UINT i=0; i<count && SUCCEEDED(hr); ++i)
     {
-        float l=static_cast<float>(rects[i].x1),t=static_cast<float>(rects[i].y1),r=static_cast<float>(rects[i].x2),b=static_cast<float>(rects[i].y2);
+        RECT requested={rects[i].x1,rects[i].y1,rects[i].x2,rects[i].y2},actual;
+        if(!IntersectRect(&actual,&requested,&clip)) continue;
+        float l=static_cast<float>(actual.left),t=static_cast<float>(actual.top),r=static_cast<float>(actual.right),b=static_cast<float>(actual.bottom);
         V v[] = {{l,t,0,color},{r,t,0,color},{l,b,0,color},{l,b,0,color},{r,t,0,color},{r,b,0,color}};
         hr = DrawUP(D3DPT_TRIANGLELIST, 2, v, sizeof(V));
     }

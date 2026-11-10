@@ -760,10 +760,7 @@ CD3DRenderState::Init(
                      && pDevice->GetMaxTextureBlendStages() >= 4
                      && pDevice->CanHandleBlendFactor()
                      && !IsTagEnabled(tagDisableHWText);
-#if QUICKER_WPF_D3D11_FACADE
-    // Tier 依照通用设备能力计算；S0b-2b 之前不加载 D3D9 字节码的文字 shader。
-    m_fCanDrawText = FALSE;
-#endif
+// 门面在资源编译边界提供 SM4 文字 shader，保留原能力选择和字形 realization 节奏。
 
     if (m_fCanDrawText)
     {
