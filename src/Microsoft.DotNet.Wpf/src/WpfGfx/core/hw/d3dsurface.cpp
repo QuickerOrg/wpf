@@ -33,6 +33,10 @@ CD3DSurface::Create(
     __deref_out_ecount(1) CD3DSurface **ppSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *ppSurface = nullptr; return QkFacadeUnimpl("CD3DSurface::Create.legacy");
+#else
+
     HRESULT hr = S_OK;
 
     *ppSurface = NULL;
@@ -59,6 +63,8 @@ Cleanup:
         ReleaseInterface(*ppSurface);
     }
     RRETURN(hr);
+
+#endif
 }
 
 //+------------------------------------------------------------------------
@@ -73,7 +79,11 @@ CD3DSurface::CD3DSurface(
     )
     : m_pD3DSurface(pD3DSurface)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if (m_pD3DSurface) m_pD3DSurface->AddRef();
+#else
     m_pD3DSurface->AddRef();
+#endif
 }
 
 //+------------------------------------------------------------------------
@@ -166,6 +176,9 @@ CD3DSurface::ReleaseD3DResources()
         Device().ReleaseUseOfDepthStencilSurface(this);
     }
 
+#if QUICKER_WPF_D3D11_FACADE
+    m_facadeGDI.Reset(); m_facadeRTV.Reset(); m_facadeTexture.Reset();
+#endif
     // This context is protected so it is safe to release the D3D resource
     ReleaseInterface((*const_cast<IDirect3DSurface9 **>(&m_pD3DSurface)));
 
@@ -203,6 +216,12 @@ CD3DSurface::GetDC(
     __out_ecount(1) HDC *phdc
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *phdc=nullptr; auto state=Device().Facade();
+    state->context->OMSetRenderTargets(0,nullptr,nullptr);
+    return m_facadeGDI->GetDC(FALSE,phdc);
+#else
+
     HRESULT hr = S_OK;
 
     HDC hBackBuffer = NULL;
@@ -251,6 +270,8 @@ Cleanup:
     }
 
     RRETURN(hr);
+
+#endif
 }
 
 //+----------------------------------------------------------------------------
@@ -285,6 +306,10 @@ CD3DSurface::ReadIntoSysMemBuffer(
     __out_bcount_full(cbBufferOut) BYTE *pbBufferOut
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DSurface::ReadIntoSysMemBuffer");
+#else
+
     HRESULT hr = S_OK;
     IDirect3DSurface9 *pD3DLockableSurface = NULL;
     IDirect3DSurface9 *pTempSurface = NULL;
@@ -480,8 +505,43 @@ Cleanup:
     ReleaseInterface(pTempSurface);
     
     RRETURN(hr);
+
+#endif
 }
 
 
 
 
+
+#if QUICKER_WPF_D3D11_FACADE
+HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,
+    UINT width,UINT height,D3DFORMAT format,CD3DSurface **out)
+{
+    *out=nullptr;
+    if(format!=D3DFMT_A8R8G8B8 && format!=D3DFMT_X8R8G8B8) return QkFacadeUnimpl("CreateFacadeSurface.format");
+    const UINT maxSize = state->featureLevel >= D3D_FEATURE_LEVEL_11_0 ? 16384U : 8192U;
+    if(!width || !height || width>maxSize || height>maxSize || static_cast<ULONGLONG>(width)*height*4>UINT_MAX) return E_INVALIDARG;
+    CD3DSurface *s=new CD3DSurface(nullptr); if(!s) return E_OUTOFMEMORY;
+    s->AddRef();
+    D3D11_TEXTURE2D_DESC td={}; td.Width=width; td.Height=height; td.MipLevels=1; td.ArraySize=1;
+    td.Format=DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count=1; td.Usage=D3D11_USAGE_DEFAULT;
+    td.BindFlags=D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE; td.MiscFlags=D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
+    HRESULT hr=state->device->CreateTexture2D(&td,nullptr,&s->m_facadeTexture);
+    if(SUCCEEDED(hr)) hr=state->device->CreateRenderTargetView(s->m_facadeTexture.Get(),nullptr,&s->m_facadeRTV);
+    if(SUCCEEDED(hr)) hr=s->m_facadeTexture.As(&s->m_facadeGDI);
+    if(FAILED(hr)){s->Release();return hr;}
+    ZeroMemory(&s->m_d3dsd,sizeof(s->m_d3dsd)); s->m_d3dsd.Width=width; s->m_d3dsd.Height=height;
+    s->m_d3dsd.Format=format; s->m_d3dsd.Type=D3DRTYPE_SURFACE; s->m_d3dsd.Usage=D3DUSAGE_RENDERTARGET;
+    s->m_d3dsd.Pool=D3DPOOL_DEFAULT; s->m_d3dsd.MultiSampleType=D3DMULTISAMPLE_NONE;
+    s->m_facadeGeneration=state->generation;
+    s->CD3DResource::Init(manager,width*height*4); *out=s; return S_OK;
+}
+HRESULT CD3DSurface::ReleaseFacadeDC()
+{
+    HRESULT hr=m_facadeGDI->ReleaseDC(nullptr);
+    auto state=Device().Facade();
+    state->context->OMSetRenderTargets(1,state->target.GetAddressOf(),nullptr);
+    // 执行层每次 Draw 重绑完整 GPU 状态，GetDC 后没有有效 GPU 状态缓存。
+    return hr;
+}
+#endif

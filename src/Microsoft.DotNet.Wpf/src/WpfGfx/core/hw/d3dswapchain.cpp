@@ -47,6 +47,10 @@ CD3DSwapChain::Create(
     __deref_out_ecount(1) CD3DSwapChain **ppSwapChain
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *ppSwapChain = nullptr; return QkFacadeUnimpl("CD3DSwapChain::Create.legacy");
+#else
+
     HRESULT hr = S_OK;
 
     *ppSwapChain = NULL;
@@ -116,6 +120,8 @@ Cleanup:
         ReleaseInterface(*ppSwapChain);
     }
     RRETURN(hr);
+
+#endif
 }
 
 //+----------------------------------------------------------------------------
@@ -185,8 +191,15 @@ CD3DSwapChain::CD3DSwapChain(
             )
 {
     RtlZeroMemory(m_rgBackBuffers, m_cBackBuffers * sizeof(*m_rgBackBuffers));
+#if QUICKER_WPF_D3D11_FACADE
+    if (m_pD3DSwapChain) m_pD3DSwapChain->AddRef();
+#else
     m_pD3DSwapChain->AddRef();
+#endif
     
+#if QUICKER_WPF_D3D11_FACADE
+    if (m_pD3DSwapChain)
+#endif
     IGNORE_HR(m_pD3DSwapChain->QueryInterface(IID_IDirect3DSwapChain9Ex,
                                               reinterpret_cast<void **>(&m_pD3DSwapChainEx)));
 
@@ -375,3 +388,14 @@ CD3DSwapChain::ReleaseDC(
 
 
 
+
+#if QUICKER_WPF_D3D11_FACADE
+HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,CD3DSwapChain **out)
+{
+    *out=nullptr; CD3DSwapChain *s=new(1) CD3DSwapChain(nullptr,1,nullptr); if(!s) return E_OUTOFMEMORY;
+    s->AddRef(); s->CD3DResource::Init(manager,0);
+    HRESULT hr=CD3DSurface::CreateFacade(manager,state,width,height,D3DFMT_A8R8G8B8,&s->m_rgBackBuffers[0]);
+    if(FAILED(hr)){s->Release();return hr;}
+    *out=s; return S_OK;
+}
+#endif

@@ -48,6 +48,10 @@ protected:
     inline void __cdecl operator delete(void* pv, size_t) { WPFFree(ProcessHeap, pv); }
 
 public:
+#if QUICKER_WPF_D3D11_FACADE
+    static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
+        UINT width, UINT height, CD3DSwapChain **out);
+#endif
 
     static HRESULT Create(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,

@@ -30,8 +30,8 @@ template class CStateTable<IDirect3DBaseTexture9 *>;
 template class CStateTable<IDirect3DVertexShader9 *>;
 template class CStateTable<IDirect3DPixelShader9 *>;
 
-template class CStateTable<IDirect3DIndexBuffer9 *>;
-template class CStateTable<IDirect3DVertexBuffer9 *>;
+template class CStateTable<QkIndexBufferHandle *>;
+template class CStateTable<QkVertexBufferHandle *>;
 template class CStateTable<IDirect3DSurface9 *>;
 
 

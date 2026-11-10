@@ -15,7 +15,9 @@
 
 #include "precomp.hpp"
 #include "quicker-quality-capture.h"
+#if !QUICKER_WPF_D3D11_FACADE
 #include "quicker-native-contract-target.h"
+#endif
 #include "../common/quicker-wheel-pacing.h"
 #include <shellscalingapi.h>
 
@@ -86,6 +88,7 @@ CSlaveHWndRenderTarget::Render(
     __out_ecount(1) bool *pfNeedsPresent
     )
 {
+#if !QUICKER_WPF_D3D11_FACADE
     static const bool measure = []() { WCHAR value[8] = {}; if (GetEnvironmentVariableW(L"QUICKER_GPU_RUN_COUNTERS", value, 8) == 1 && value[0] == L'1') return true; return GetEnvironmentVariableW(L"QUICKER_GPU_ACCOUNTING", value, 8) == 1 && value[0] == L'1'; }();
     if (measure && m_hWnd)
     {
@@ -118,6 +121,7 @@ CSlaveHWndRenderTarget::Render(
         if (*pfNeedsPresent) WheelPacingAdd(2);
         return S_OK;
     }
+#endif
     HRESULT hr = S_OK;
 
     IFC(EnsureRenderTargetInternal());
@@ -917,6 +921,7 @@ CSlaveHWndRenderTarget::EnsureRenderTargetInternal()
 
         pMILFactory = m_pComposition->GetMILFactory();
 
+#if !QUICKER_WPF_D3D11_FACADE
         bool nativeRequested=CQuickerNativeContractRT::Enabled(m_hWnd);
         bool layered=(GetWindowLongPtrW(m_hWnd,GWL_EXSTYLE)&WS_EX_LAYERED)!=0;
         if (nativeRequested && layered)
@@ -926,13 +931,16 @@ CSlaveHWndRenderTarget::EnsureRenderTargetInternal()
         else
         {
             if(nativeRequested){creationFlags=static_cast<MilRTInitialization::Flags>((creationFlags & ~MilRTInitialization::TypeMask)|MilRTInitialization::SoftwareOnly);SetPropW(m_hWnd,L"Quicker.NativeOpaqueSoftware",reinterpret_cast<HANDLE>(1));}
+#endif
             IFC(pMILFactory->CreateDesktopRenderTarget(
                 m_hWnd,
                 m_WindowLayerType,
                 creationFlags,
                 &m_pRenderTarget
                 ));
+#if !QUICKER_WPF_D3D11_FACADE
         }
+#endif
 
         EventWriteWClientDesktopRTCreateEnd((UINT64)m_hWnd);
 

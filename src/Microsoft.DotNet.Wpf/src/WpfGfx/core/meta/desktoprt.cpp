@@ -94,7 +94,10 @@ HRESULT CDesktopRenderTarget::Create(
     // available.
     //
     if (   (!(RenderOptions::IsHardwareAccelerationInRdpEnabled()) && pDisplaySet->IsNonLocalDisplayPresent())
-        || !pDisplaySet->D3DObject())
+#if !QUICKER_WPF_D3D11_FACADE
+        || !pDisplaySet->D3DObject()
+#endif
+        )
     {
         // If possible, just revert to Sw.  This simply prevents trying Hw and
         // later falling back.

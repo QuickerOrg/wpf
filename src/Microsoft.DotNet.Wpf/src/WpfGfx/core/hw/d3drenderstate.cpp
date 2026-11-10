@@ -735,8 +735,13 @@ CD3DRenderState::Init(
         m_pDeviceNoRef->GetMaxTextureBlendStages()
         );
 
+#if QUICKER_WPF_D3D11_FACADE
+    QkStateHandle *stateHandle=pDevice->Facade();
+#else
+    QkStateHandle *stateHandle=pD3DDevice;
+#endif
     IFC(CHwRenderStateManager::Create(
-        pD3DDevice,
+        stateHandle,
         dwMaxTextureBlendStages,
         m_pDeviceNoRef->CanHandleBlendFactor(),
         m_pDeviceNoRef->SupportsScissorRect(),

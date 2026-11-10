@@ -42,7 +42,7 @@ DeclareTag(tagWireframe, "MIL-HW", "Wireframe");
 //-----------------------------------------------------------------------------
 __checkReturn HRESULT
 CHwRenderStateManager::Create(
-    __inout_ecount(1) IDirect3DDevice9 *pD3DDevice,
+    __inout_ecount(1) QkStateHandle *pD3DDevice,
     DWORD dwMaxBlendStages,
     BOOL fCanHandleBlendFactor,
     BOOL fSupportsScissorRect,
@@ -86,7 +86,7 @@ Cleanup:
 //-----------------------------------------------------------------------------
 HRESULT
 CHwRenderStateManager::Init(
-    __inout_ecount(1) IDirect3DDevice9 *pD3DDevice,
+    __inout_ecount(1) QkStateHandle *pD3DDevice,
     DWORD dwMaxBlendStages,
     BOOL fCanHandleBlendFactor,
     BOOL fSupportsScissorRect,
@@ -101,7 +101,9 @@ CHwRenderStateManager::Init(
     m_pID3DDevice = pD3DDevice;
     m_pID3DDevice->AddRef();
 
+#if !QUICKER_WPF_D3D11_FACADE
     IGNORE_HR(m_pID3DDevice->QueryInterface(IID_IDirect3DDevice9Ex, (void**)&m_pID3DDeviceEx));
+#endif
 
     m_nMaxTextureBlendStage = dwMaxBlendStages;
 
@@ -1422,7 +1424,7 @@ Cleanup:
 //-------------------------------------------------------------------------
 HRESULT
 CHwRenderStateManager::ForceSetStreamSource(
-    __in_ecount_opt(1) IDirect3DVertexBuffer9 *pStream,
+    __in_ecount_opt(1) QkVertexBufferHandle *pStream,
     UINT uVertexStride
     )
 {
@@ -1460,7 +1462,7 @@ Cleanup:
 //-------------------------------------------------------------------------
 HRESULT
 CHwRenderStateManager::ForceSetIndices(
-    __in_ecount_opt(1) IDirect3DIndexBuffer9 *pStream
+    __in_ecount_opt(1) QkIndexBufferHandle *pStream
     )
 {
     HRESULT hr = S_OK;

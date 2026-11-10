@@ -1,5 +1,10 @@
 <Project ToolsVersion="14.0" InitialTargets="D3DXUsageWarning;CopyGeneratedIncludeFilesToIntermediateFolder" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="Graphics.Paths.props"/>
+  <ItemDefinitionGroup Condition="'$(WpfD3D11Facade)' == 'true'">
+    <ClCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);QUICKER_WPF_D3D11_FACADE=1</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   
   <PropertyGroup>
     <UseDirectXMath>true</UseDirectXMath>
@@ -76,6 +81,7 @@
     <!-- d3dcompiler.lib is needed for D3DCompile API               -->
     <Link Condition="'$(ConfigurationType)'!='StaticLibrary'">
       <AdditionalDependencies>%(AdditionalDependencies);d3d9.lib;$(D3DCompilerDllBaseName).lib</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(WpfD3D11Facade)' == 'true'">%(AdditionalDependencies);d3d11.lib;dxgi.lib</AdditionalDependencies>
       <AdditionalOptions Condition="'$(Architecture)'!='arm64'">%(AdditionalOptions) /dllrename:$(D3DCompilerDllBaseName)$(D3DCompilerVersion)=$(D3DCompilerDllBaseName)$(D3DCompilerVersion)$(WpfVersionSuffix)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>

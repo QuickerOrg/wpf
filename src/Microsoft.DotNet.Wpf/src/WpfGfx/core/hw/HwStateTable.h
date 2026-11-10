@@ -529,8 +529,8 @@ CStateTable<IDirect3DPixelShader9 *>::CEntry::GetValue(
 
 template<>
 MIL_FORCEINLINE void
-CStateTable<IDirect3DIndexBuffer9 *>::CEntry::GetValue(
-    __out_ecount(1) IDirect3DIndexBuffer9 *&oOutValue
+CStateTable<QkIndexBufferHandle *>::CEntry::GetValue(
+    __out_ecount(1) QkIndexBufferHandle *&oOutValue
     ) const
 {
     oOutValue = m_oValue;
@@ -543,8 +543,8 @@ CStateTable<IDirect3DIndexBuffer9 *>::CEntry::GetValue(
 
 template<>
 MIL_FORCEINLINE void
-CStateTable<IDirect3DVertexBuffer9 *>::CEntry::GetValue(
-    __out_ecount(1) IDirect3DVertexBuffer9 *&oOutValue
+CStateTable<QkVertexBufferHandle *>::CEntry::GetValue(
+    __out_ecount(1) QkVertexBufferHandle *&oOutValue
     ) const
 {
     oOutValue = m_oValue;

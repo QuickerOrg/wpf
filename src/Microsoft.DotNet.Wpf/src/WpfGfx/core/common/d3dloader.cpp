@@ -156,8 +156,14 @@ CD3DModuleLoader::CreateD3DObjects(
     __deref_out_ecount(1) IDirect3D9 **ppID3D,
     __deref_out_ecount(1) IDirect3D9Ex **ppID3DEx
     )
-{    
+{
+#if QUICKER_WPF_D3D11_FACADE
+    *ppID3D = nullptr; *ppID3DEx = nullptr; return QkFacadeUnimpl("CreateD3DObjects.legacy");
+#else
+
     return g_D3DModuleLoader.CreateD3DObjects(ppID3D, ppID3DEx);
+
+#endif
 }
 
 //+------------------------------------------------------------------------
@@ -293,6 +299,10 @@ HRESULT
 CD3DModuleLoaderInternal::LoadD3DModule(
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("LoadD3DModule.legacy");
+#else
+
     HRESULT hr = S_OK;
 
     Assert(m_hrD3DModuleLoad == WGXERR_NOTINITIALIZED);
@@ -363,6 +373,8 @@ CD3DModuleLoaderInternal::LoadD3DModule(
 
     Assert(m_hrD3DModuleLoad != WGXERR_NOTINITIALIZED);
     RRETURN(hr);
+
+#endif
 }
 
 //+------------------------------------------------------------------------

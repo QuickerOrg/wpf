@@ -835,6 +835,10 @@ CHwSurfaceRenderTarget::SoftwareFillPath(
     HRESULT hrReasonForFallback
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("SoftwareFillPath");
+#else
+
     HRESULT hr = S_OK;
 
     ENTER_USE_CONTEXT_FOR_SCOPE(*m_pD3DDevice);
@@ -894,6 +898,8 @@ Cleanup:
     //ReleaseInterface(pswFallback);
     
     RRETURN(hr);
+
+#endif
 }
 
 
@@ -918,7 +924,9 @@ CHwSurfaceRenderTarget::AcceleratedFillPath(
     HRESULT hr = S_OK;
 
     Assert(m_pD3DDevice->IsInAUseContext());
+#if !QUICKER_WPF_D3D11_FACADE
     Assert(CanUseShaderPipeline());
+#endif
 
     IFC(ShaderAcceleratedFillPath(
         CompositingMode,
@@ -957,10 +965,14 @@ CHwSurfaceRenderTarget::ShaderAcceleratedFillPath(
 
     Assert(m_pD3DDevice->IsInAUseContext());
 
+#if QUICKER_WPF_D3D11_FACADE
+    CHwFFPipeline Pipeline(m_pD3DDevice);
+#else
     CHwShaderPipeline Pipeline(
         true, /* this is a 2D pipeline */
         m_pD3DDevice
         );
+#endif
 
     IFC(Pipeline.InitializeForRendering(
         CompositingMode,

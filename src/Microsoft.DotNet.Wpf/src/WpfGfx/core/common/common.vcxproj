@@ -57,6 +57,7 @@
     <ClCompile Include="BaseMatrix.cpp" />
     <ClCompile Include="BufferDispenser.cpp" />
     <ClCompile Include="D3DLoader.cpp" />
+    <ClCompile Include="d3d11facade.cpp" Condition="'$(WpfD3D11Facade)' == 'true'" />
     <ClCompile Include="DWMInterop.cpp" />
     <ClCompile Include="Gamma.cpp" />
     <ClCompile Include="Display.cpp" />

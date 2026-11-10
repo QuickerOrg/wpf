@@ -259,6 +259,10 @@ HRESULT CD3DDeviceManager::GetSWDevice(
     __deref_out_ecount(1) CD3DDeviceLevel1 **ppDevice
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *ppDevice = nullptr; return QkFacadeUnimpl("GetSWDevice");
+#else
+
     HRESULT hr = S_OK;
 
     *ppDevice = NULL;
@@ -355,6 +359,8 @@ Cleanup:
     ReleaseInterfaceNoNULL(pDeviceLevel1);
     
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -908,6 +914,20 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
     __out_ecount_opt(1) UINT *pAdapterOrdinalInGroup
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *ppDeviceLevel1 = nullptr;
+    if (type != D3DDEVTYPE_HAL || !pDisplay) return QkFacadeUnimpl("GetD3DDevice.nonHardware");
+    if (pAdapterOrdinalInGroup) *pAdapterOrdinalInGroup = 0;
+    if (pPresentParams) {
+        ZeroMemory(pPresentParams, sizeof(*pPresentParams));
+        pPresentParams->Windowed=TRUE; pPresentParams->BackBufferCount=1;
+        pPresentParams->BackBufferFormat=D3DFMT_A8R8G8B8;
+        pPresentParams->BackBufferWidth=1; pPresentParams->BackBufferHeight=1;
+        pPresentParams->SwapEffect=D3DSWAPEFFECT_COPY; pPresentParams->hDeviceWindow=hwnd;
+    }
+    return CD3DDeviceLevel1::Create(nullptr, pDisplay, nullptr, 0, ppDeviceLevel1);
+#else
+
     HRESULT hr = S_OK;
 
     Assert(m_cCallers > 0);
@@ -1076,6 +1096,8 @@ Cleanup:
     }
 
     RRETURN(hr);
+
+#endif
 }
 
 

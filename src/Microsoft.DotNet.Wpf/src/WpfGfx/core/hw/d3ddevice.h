@@ -100,6 +100,10 @@ private:
     };
 
 public:
+#if QUICKER_WPF_D3D11_FACADE
+    QkD3D11State *m_facade = nullptr;
+    QkD3D11State *Facade() const { return m_facade; }
+#endif
     DECLARE_METERHEAP_CLEAR(ProcessHeap, Mt(CD3DDeviceLevel1));
 
     static HRESULT Create(
@@ -305,7 +309,7 @@ public:
         DWORD Usage,
         DWORD FVF,
         D3DPOOL Pool,
-        __deref_out_ecount(1) IDirect3DVertexBuffer9 ** const ppVertexBuffer
+        __deref_out_ecount(1) QkVertexBufferHandle ** const ppVertexBuffer
         );
 
     HRESULT CreateIndexBuffer(
@@ -313,7 +317,7 @@ public:
         DWORD Usage,
         D3DFORMAT Format,
         D3DPOOL Pool,
-        __deref_out_ecount(1) IDirect3DIndexBuffer9 ** const ppIndexBuffer
+        __deref_out_ecount(1) QkIndexBufferHandle ** const ppIndexBuffer
         );
 
     HRESULT CreateStateBlock(
@@ -324,9 +328,9 @@ public:
     HRESULT ComposeRects(
         __in_ecount(1) IDirect3DSurface9* pSource,
         __inout_ecount(1) IDirect3DSurface9* pDestination,
-        __in_ecount(1) IDirect3DVertexBuffer9* pSrcRectDescriptors,
+        __in_ecount(1) QkVertexBufferHandle* pSrcRectDescriptors,
         UINT NumRects,
-        __in_ecount(1) IDirect3DVertexBuffer9* pDstRectDescriptors,
+        __in_ecount(1) QkVertexBufferHandle* pDstRectDescriptors,
         D3DCOMPOSERECTSOP Operation
         );
 
@@ -719,7 +723,11 @@ public:
         )
     {
         Assert(SupportsGetScanLine());
+#if QUICKER_WPF_D3D11_FACADE
+        return QkFacadeUnimpl("GetRasterStatus");
+#else
         return m_pD3DDevice->GetRasterStatus(uSwapChain, pRasterStatus);
+#endif
     }
 
     HRESULT WaitForVBlank(
@@ -1127,7 +1135,7 @@ private:
 
     IDirect3DVertexShader9* m_pEffectPipelineVertexShader20; // Vertex shader 2.0 for shader effects pipeline.
     IDirect3DVertexShader9* m_pEffectPipelineVertexShader30; // Vertex shader 3.0 for shader effects pipeline.
-    IDirect3DVertexBuffer9* m_pEffectPipelineVertexBuffer; // Scratch buffer for the shader effects pipeline. 
+    QkVertexBufferHandle* m_pEffectPipelineVertexBuffer; // Scratch buffer for the shader effects pipeline.
     IDirect3DPixelShader9* m_pEffectPipelinePassThroughPixelShader; // Pass-through pixel shader for shader effects pipelines.
 };
 

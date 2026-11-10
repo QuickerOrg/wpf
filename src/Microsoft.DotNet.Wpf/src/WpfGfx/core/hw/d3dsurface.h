@@ -21,6 +21,15 @@ private:
     DECLARE_METERHEAP_ALLOC(ProcessHeap, Mt(CD3DSurface));
 
 public:
+#if QUICKER_WPF_D3D11_FACADE
+    ComPtr<ID3D11Texture2D> m_facadeTexture;
+    ComPtr<ID3D11RenderTargetView> m_facadeRTV;
+    ComPtr<IDXGISurface1> m_facadeGDI;
+    ULONGLONG m_facadeGeneration = 0;
+    static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
+        UINT width, UINT height, D3DFORMAT format, CD3DSurface **out);
+    HRESULT ReleaseFacadeDC();
+#endif
     static HRESULT Create(
         __inout_ecount(1) CD3DResourceManager *pResourceManager,
         __inout_ecount(1) IDirect3DSurface9 *pD3DSurface,
@@ -39,13 +48,21 @@ public:
         DWORD Flags
         )
     {
+#if QUICKER_WPF_D3D11_FACADE
+        return QkFacadeUnimpl("CD3DSurface::LockRect");
+#else
         return ID3DSurface()->LockRect(pLockedRect, pRect, Flags);
+#endif
     }
 
     HRESULT UnlockRect(
         )
     {
+#if QUICKER_WPF_D3D11_FACADE
+        return QkFacadeUnimpl("CD3DSurface::UnlockRect");
+#else
         return ID3DSurface()->UnlockRect();
+#endif
     }
 
 
@@ -73,7 +90,11 @@ public:
         HDC hdc
         )
     {
+#if QUICKER_WPF_D3D11_FACADE
+        return ReleaseFacadeDC();
+#else
         return ID3DSurface()->ReleaseDC(hdc);
+#endif
     }
 
     HRESULT ReadIntoSysMemBuffer(

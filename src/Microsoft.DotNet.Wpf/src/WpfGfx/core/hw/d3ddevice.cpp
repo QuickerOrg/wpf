@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
@@ -189,6 +189,9 @@ CD3DDeviceLevel1::Create(
     __deref_out_ecount(1) CD3DDeviceLevel1 ** const ppDevice
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if (pID3DDevice) { *ppDevice = nullptr; return QkFacadeUnimpl("Create.legacyDevice"); }
+#endif
     HRESULT hr = S_OK;
 
     *ppDevice = NULL;
@@ -317,6 +320,27 @@ CD3DDeviceLevel1::Init(
     __in_ecount(1) const CDisplay *pDisplay
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    m_resourceManager.Init(this);
+    HRESULT hr = QkD3D11State::Create(pDisplay->GetHMONITOR(), &m_facade);
+    if (FAILED(hr)) return hr;
+    hr = m_facade->Initialize(); if (FAILED(hr)) return hr;
+    UINT memory; m_facade->ReadCaps(&m_caps, &memory); m_caps.AdapterOrdinal=pDisplay->GetDisplayIndex();
+    m_luidD3DAdapter=m_facade->adapter.AdapterLuid; m_Tier=GraphicsAccelerationTier::GetTier(memory,m_caps);
+    m_pCachedAnisoFilterMode=&CD3DRenderState::sc_fmLinear;
+    m_fmtSupportFor32bppBGR=MilPixelFormat::BGR32bpp; m_fmtSupportFor32bppPBGRA=MilPixelFormat::PBGRA32bpp;
+    m_multisampleTypeFor32bppBGR=m_multisampleTypeFor32bppPBGRA=D3DMULTISAMPLE_NONE;
+    m_fSupportsD3DFMT_A8=m_fSupportsD3DFMT_L8=m_fSupportsD3DFMT_P8=false;
+    m_RenderTargetTestStatusX8R8G8B8.hrTest=m_RenderTargetTestStatusX8R8G8B8.hrTestGetDC=S_OK;
+    m_RenderTargetTestStatusA8R8G8B8.hrTest=m_RenderTargetTestStatusA8R8G8B8.hrTestGetDC=S_OK;
+    m_RenderTargetTestStatusA2R10G10B10.hrTest=m_RenderTargetTestStatusA2R10G10B10.hrTestGetDC=E_NOTIMPL;
+    IGNORE_HR(AcquireIndex());
+    hr=CD3DRenderState::Init(this,nullptr); if(FAILED(hr)) return hr;
+    hr=InitSharedData(this); if(FAILED(hr)) return hr;
+    hr=CHwD3DIndexBuffer::Create(&m_resourceManager,this,20001*3*sizeof(WORD),&m_pHwIndexBuffer); if(FAILED(hr)) return hr;
+    return CHwD3DVertexBuffer::Create(&m_resourceManager,this,20001*sizeof(CD3DVertexXYZDUV2),&m_pHwVertexBuffer);
+#else
+
     HRESULT hr = S_OK;
 
     Assert(m_pD3DDevice == NULL);
@@ -584,6 +608,8 @@ Cleanup:
         ReleaseInterface(m_pD3DDeviceEx);
     }
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -859,6 +885,9 @@ CD3DDeviceLevel1::~CD3DDeviceLevel1()
     Assert(m_pDepthStencilBufferForCurrentRTNoRef == NULL);
 
     ReleaseInterface(m_pD3DDevice);
+#if QUICKER_WPF_D3D11_FACADE
+    ReleaseInterface(m_facade);
+#endif
 
 #if DBG
     // Only need to leave for entry assert checks in ~CAssertEntry
@@ -1709,6 +1738,10 @@ CD3DDeviceLevel1::MarkUnusable(
     bool fMayBeMultithreadedCall
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    m_hrDisplayInvalid=WGXERR_DISPLAYSTATEINVALID; m_resourceManager.DestroyAllResources(); return;
+#else
+
     // No entry check as this method is thread safe
 
     if (m_hrDisplayInvalid == D3DERR_DRIVERINTERNALERROR)
@@ -1778,6 +1811,8 @@ CD3DDeviceLevel1::MarkUnusable(
         m_resourceManager.DestroyAllResources();
 
     }
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -1796,6 +1831,10 @@ CD3DDeviceLevel1::GetSwapChain(
     __deref_out_ecount(1) CD3DSwapChain ** const ppSwapChain
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::GetSwapChain");
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -1824,6 +1863,8 @@ CD3DDeviceLevel1::GetSwapChain(
 Cleanup:
     ReleaseInterfaceNoNULL(pD3DSwapChain);
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -1847,6 +1888,12 @@ CD3DDeviceLevel1::CreateRenderTarget(
     __deref_out_ecount(1) CD3DSurface ** const ppD3DSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *ppD3DSurface=nullptr;
+    if(d3dMultiSampleType!=D3DMULTISAMPLE_NONE) return QkFacadeUnimpl("CreateRenderTarget.MSAA");
+    return CD3DSurface::CreateFacade(&m_resourceManager,m_facade,uiWidth,uiHeight,d3dfmtSurface,ppD3DSurface);
+#else
+
     HRESULT hr = S_OK;
     IDirect3DSurface9 *pID3DSurface = NULL;
 
@@ -1866,6 +1913,8 @@ Cleanup:
     ReleaseInterface(pID3DSurface);
 
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -1891,6 +1940,10 @@ CD3DDeviceLevel1::CreateRenderTargetUntracked(
     __deref_out_ecount(1) IDirect3DSurface9 ** const ppD3DSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateRenderTargetUntracked");
+#else
+
     HRESULT hr = S_OK;
 
     IDirect3DSurface9 *pID3DSurface = NULL;
@@ -1929,6 +1982,8 @@ Cleanup:
     ReleaseInterfaceNoNULL(pID3DSurface);
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -1947,6 +2002,10 @@ CD3DDeviceLevel1::GetRenderTargetData(
     __in_ecount(1) IDirect3DSurface9 *pDestinationSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::GetRenderTargetData");
+#else
+
     HRESULT hr = S_OK;
 
     IFC(m_pD3DDevice->GetRenderTargetData(
@@ -1961,6 +2020,8 @@ Cleanup:
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -1979,6 +2040,11 @@ CD3DDeviceLevel1::CreateAdditionalSwapChain(
     __deref_out_ecount(1) CD3DSwapChain ** const ppSwapChain
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if (!pMILDC || !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return QkFacadeUnimpl("CreateAdditionalSwapChain.opaque");
+    return CD3DSwapChain::CreateFacade(&m_resourceManager,m_facade,pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight,ppSwapChain);
+#else
+
     AssertDeviceEntry(*this);
 
     // Assert format has been tested, for swap chains.
@@ -2077,6 +2143,8 @@ Cleanup:
 
     ReleaseInterface(pD3DSwapChain);
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2094,9 +2162,13 @@ CD3DDeviceLevel1::CreateVertexBuffer(
     DWORD Usage,
     DWORD FVF,
     D3DPOOL Pool,
-    __deref_out_ecount(1) IDirect3DVertexBuffer9 ** const ppVertexBuffer
+    __deref_out_ecount(1) QkVertexBufferHandle ** const ppVertexBuffer
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->CreateBuffer(Length,D3D11_BIND_VERTEX_BUFFER,ppVertexBuffer);
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2123,6 +2195,8 @@ CD3DDeviceLevel1::CreateVertexBuffer(
     MIL_THR(hr); // placed here to avoid stack capturing multiple times in allocation loop
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 HRESULT
@@ -2131,9 +2205,13 @@ CD3DDeviceLevel1::CreateIndexBuffer(
     DWORD Usage,
     D3DFORMAT Format,
     D3DPOOL Pool,
-    __deref_out_ecount(1) IDirect3DIndexBuffer9 ** const ppIndexBuffer
+    __deref_out_ecount(1) QkIndexBufferHandle ** const ppIndexBuffer
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->CreateBuffer(Length,D3D11_BIND_INDEX_BUFFER,ppIndexBuffer);
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2160,6 +2238,8 @@ CD3DDeviceLevel1::CreateIndexBuffer(
     MIL_THR(hr); // placed here to avoid stack capturing multiple times in allocation loop
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2175,12 +2255,16 @@ HRESULT
 CD3DDeviceLevel1::ComposeRects(
         __in_ecount(1) IDirect3DSurface9* pSource,
         __inout_ecount(1) IDirect3DSurface9* pDestination,
-        __in_ecount(1) IDirect3DVertexBuffer9* pSrcRectDescriptors,
+        __in_ecount(1) QkVertexBufferHandle* pSrcRectDescriptors,
         UINT NumRects,
-        __in_ecount(1) IDirect3DVertexBuffer9* pDstRectDescriptors,
+        __in_ecount(1) QkVertexBufferHandle* pDstRectDescriptors,
         D3DCOMPOSERECTSOP Operation
         )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::ComposeRects");
+#else
+
     AssertDeviceEntry(*this);
     Assert(m_pD3DDeviceEx);
 
@@ -2202,6 +2286,8 @@ CD3DDeviceLevel1::ComposeRects(
         ));
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2224,6 +2310,10 @@ CD3DDeviceLevel1::CreateTexture(
     __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateTexture");
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2269,6 +2359,8 @@ CD3DDeviceLevel1::CreateTexture(
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2286,6 +2378,10 @@ CD3DDeviceLevel1::CreateStateBlock(
     __deref_out_ecount(1) IDirect3DStateBlock9 ** const ppStateBlock
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateStateBlock");
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2306,6 +2402,8 @@ CD3DDeviceLevel1::CreateStateBlock(
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2323,6 +2421,10 @@ CD3DDeviceLevel1::CreateLockableTexture(
     __deref_out_ecount(1) CD3DLockableTexture ** const ppLockableTexture
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateLockableTexture");
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2377,6 +2479,8 @@ CD3DDeviceLevel1::CreateLockableTexture(
 Cleanup:
     ReleaseInterface(pD3DTexture);
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2404,6 +2508,10 @@ CD3DDeviceLevel1::CreateSysMemUpdateSurface(
     __deref_out_ecount(1) IDirect3DSurface9 ** const ppD3DSysMemSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateSysMemUpdateSurface");
+#else
+
     HRESULT hr = S_OK;
     IDirect3DTexture9 *pD3DTexture = NULL;
 
@@ -2490,6 +2598,8 @@ Cleanup:
     ReleaseInterfaceNoNULL(pD3DTexture);
 
     RRETURN(hr);
+
+#endif
 }
 
 
@@ -2518,6 +2628,10 @@ CD3DDeviceLevel1::CreateSysMemReferenceTexture(
     __deref_out_ecount(1) IDirect3DTexture9 ** const ppD3DSysMemTexture
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateSysMemReferenceTexture");
+#else
+
     HRESULT hr = S_OK;
 
     // Mip mapping for this special kind of texture
@@ -2555,6 +2669,8 @@ CD3DDeviceLevel1::CreateSysMemReferenceTexture(
     MIL_THR(hr); // placed here to avoid stack capturing multiple times in allocation loop
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -2579,6 +2695,10 @@ CD3DDeviceLevel1::UpdateSurface(
     __in_ecount_opt(1) const POINT *pDestPoint
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::UpdateSurface");
+#else
+
     HRESULT hr = S_OK;
 
     AssertDeviceEntry(*this);
@@ -2592,6 +2712,8 @@ CD3DDeviceLevel1::UpdateSurface(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2611,6 +2733,10 @@ HRESULT CD3DDeviceLevel1::UpdateTexture(
     __inout_ecount(1) IDirect3DTexture9 *pD3DPoolDefaultDestTexture
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::UpdateTexture");
+#else
+
     HRESULT hr = S_OK;
 
     IFC(m_pD3DDevice->UpdateTexture(
@@ -2620,6 +2746,8 @@ HRESULT CD3DDeviceLevel1::UpdateTexture(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2642,6 +2770,10 @@ HRESULT CD3DDeviceLevel1::StretchRect(
     D3DTEXTUREFILTERTYPE Filter
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::StretchRect");
+#else
+
     HRESULT hr = S_OK;
 
     AssertDeviceEntry(*this);
@@ -2668,6 +2800,8 @@ HRESULT CD3DDeviceLevel1::StretchRect(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2687,6 +2821,10 @@ CD3DDeviceLevel1::SetRenderTargetForEffectPipeline(
     __in_ecount(1) CD3DSurface *pD3DSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::SetRenderTargetForEffectPipeline");
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2751,6 +2889,8 @@ Cleanup:
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -2772,6 +2912,15 @@ CD3DDeviceLevel1::SetRenderTarget(
     __in_ecount(1) CD3DSurface *pD3DSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if(pD3DSurface->m_facadeGeneration!=m_facade->generation) return WGXERR_DISPLAYSTATEINVALID;
+    m_desc=pD3DSurface->Desc(); m_pCurrentRenderTargetNoRef=pD3DSurface;
+    HRESULT hr=m_facade->BindTarget(pD3DSurface->m_facadeRTV.Get(),m_desc.Width,m_desc.Height); if(FAILED(hr)) return hr;
+    SetClipSet(false); MilPointAndSizeL vp={0,0,static_cast<INT>(m_desc.Width),static_cast<INT>(m_desc.Height)};
+    ScissorRectChanged(&vp); hr=SetViewport(&vp); if(FAILED(hr)) return hr;
+    return SetSurfaceToClippingMatrix(&vp);
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -2874,6 +3023,8 @@ Cleanup:
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -2894,6 +3045,11 @@ CD3DDeviceLevel1::ReleaseUseOfRenderTarget(
                                                       // will no longer be valid
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if(pD3DSurface==m_pCurrentRenderTargetNoRef) { m_pCurrentRenderTargetNoRef=nullptr; m_facade->target.Reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr); }
+    return;
+#else
+
     AssertDeviceEntry(*this);
 
     if (pD3DSurface == m_pCurrentRenderTargetNoRef)
@@ -2924,6 +3080,8 @@ CD3DDeviceLevel1::ReleaseUseOfRenderTarget(
         //       beginning a scene now.  The scene will begin once
         //       another RT has been set.
     }
+
+#endif
 }
 
 
@@ -2946,6 +3104,10 @@ CD3DDeviceLevel1::Clear(
     int iStencilValue
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->Clear(dwFlags,d3dColor,dwCount,pRects);
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -3028,6 +3190,8 @@ CD3DDeviceLevel1::Clear(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -3047,6 +3211,10 @@ CD3DDeviceLevel1::ColorFill(
     D3DCOLOR color
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::ColorFill");
+#else
+
     {
         MtSetDefault(Mt(D3DColorFill));
 
@@ -3056,6 +3224,8 @@ CD3DDeviceLevel1::ColorFill(
             color
             );
     }
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -3125,6 +3295,11 @@ CD3DDeviceLevel1::Present(
     DWORD dwD3DPresentFlags
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if(!(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return QkFacadeUnimpl("Present.opaque");
+    bool processed=false; return PresentWithGDI(pD3DSwapChain,prcSource,prcDest,pMILDC,pDirtyRegion,&processed);
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr;
@@ -3281,6 +3456,8 @@ CD3DDeviceLevel1::Present(
 Cleanup:
 
     RRETURN1(hr, S_PRESENT_OCCLUDED); // DIE already handled
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -3303,6 +3480,10 @@ CD3DDeviceLevel1::PresentWithD3D(
     __out_ecount(1) bool *pfPresentProcessed
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::PresentWithD3D");
+#else
+
     HRESULT hr = S_OK;
 
     Assert( pMILDC->PresentWithHAL() );
@@ -3393,6 +3574,8 @@ CD3DDeviceLevel1::PresentWithD3D(
     }
 
     RRETURN1(hr, S_PRESENT_OCCLUDED);
+
+#endif
 }
 
 
@@ -3510,6 +3693,25 @@ CD3DDeviceLevel1::PresentWithGDI(
     __out_ecount(1) bool *pfPresentProcessed
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    *pfPresentProcessed=false; CD3DSurface *surface=nullptr;
+    HRESULT hr=pD3DSwapChain->GetBackBuffer(0,&surface); if(FAILED(hr))return hr;
+    HDC dc=nullptr; hr=surface->GetDC(&dc);
+    if(SUCCEEDED(hr)) {
+        SIZE size={static_cast<LONG>(surface->Desc().Width),static_cast<LONG>(surface->Desc().Height)};
+        POINT src={0,0}; BLENDFUNCTION blend=pMILDC->GetBlendFunction();
+        blend.BlendOp=AC_SRC_OVER; blend.BlendFlags=0; blend.AlphaFormat=AC_SRC_ALPHA;
+        UPDATELAYEREDWINDOWINFO info={}; info.cbSize=sizeof(info);
+        info.pptDst=&pMILDC->GetPosition(); info.psize=&size; info.hdcSrc=dc; info.pptSrc=&src;
+        info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=ULW_ALPHA;
+        hr=UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError());
+        HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr))hr=release;
+        *pfPresentProcessed=SUCCEEDED(hr);
+        if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE Present ULW\n"); hr=m_facade->RecordPresent(); }
+    }
+    surface->Release(); return hr;
+#else
+
     HRESULT hr = S_OK;
     HDC hdcFrontBuffer = NULL;
     HDC hdcBackBuffer = NULL;
@@ -3668,6 +3870,8 @@ Cleanup:
     }
 
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -3777,6 +3981,10 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::BeginScene()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    m_fInScene=true; return m_facade->DeviceStatus();
+#else
+
     HRESULT hr = S_OK;
 
     Assert(!m_fInScene);
@@ -3793,6 +4001,8 @@ CD3DDeviceLevel1::BeginScene()
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -3807,6 +4017,10 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::EndScene()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    m_fInScene=false; return m_facade->DeviceStatus();
+#else
+
     HRESULT hr = S_OK;
 
     Assert(m_fInScene);
@@ -3816,6 +4030,8 @@ CD3DDeviceLevel1::EndScene()
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -3887,6 +4103,10 @@ CD3DDeviceLevel1::Set3DTransforms(
     __in_ecount(1) CMatrix<CoordinateSpace::Projection3D,CoordinateSpace::Device> const &matHomogeneousTo2DDevice
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::Set3DTransforms");
+#else
+
     HRESULT hr = S_OK;
     CMILMatrix mat2DDeviceToHomogeneous;
     CMILMatrix matProjectionModifier;
@@ -3918,6 +4138,8 @@ CD3DDeviceLevel1::Set3DTransforms(
 
 Cleanup:
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -4101,6 +4323,10 @@ CD3DDeviceLevel1::CreatePixelShaderFromResource(
     __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppPixelShader
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreatePixelShaderFromResource");
+#else
+
     HRESULT hr = S_OK;
     HGLOBAL hResource = NULL;
     HRSRC hResourceInfo = NULL;
@@ -4138,6 +4364,8 @@ Cleanup:
         GlobalUnlock(hResource);
     }
     return hr;
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -4157,6 +4385,10 @@ CD3DDeviceLevel1::CreateVertexShaderFromResource(
     __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppVertexShader
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateVertexShaderFromResource");
+#else
+
     HRESULT hr = S_OK;
     HGLOBAL hResource = NULL;
     HRSRC hResourceInfo = NULL;
@@ -4184,6 +4416,8 @@ Cleanup:
         GlobalUnlock(hResource);
     }
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -4202,6 +4436,10 @@ CD3DDeviceLevel1::CompilePipelineVertexShader(
     __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppVertexShader
 )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CompilePipelineVertexShader");
+#else
+
     MtSetDefault(Mt(D3DCompiler));
 
     std::shared_ptr<buffer> pShader;
@@ -4229,6 +4467,8 @@ CD3DDeviceLevel1::CompilePipelineVertexShader(
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -4247,6 +4487,10 @@ CD3DDeviceLevel1::CompilePipelinePixelShader(
     __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppPixelShader
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CompilePipelinePixelShader");
+#else
+
     MtSetDefault(Mt(D3DCompiler));
 
     std::shared_ptr<buffer> pShader;
@@ -4274,6 +4518,8 @@ CD3DDeviceLevel1::CompilePipelinePixelShader(
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -4292,6 +4538,10 @@ CD3DDeviceLevel1::CreateVertexShader(
     __deref_out_ecount(1) IDirect3DVertexShader9 ** const ppOutShader
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateVertexShader");
+#else
+
     HRESULT hr = S_OK;
 
     BEGIN_DEVICE_ALLOCATION;
@@ -4306,6 +4556,8 @@ CD3DDeviceLevel1::CreateVertexShader(
     MIL_THR(hr); // placed here to avoid stack capturing multiple times in allocation loop
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -4323,6 +4575,10 @@ CD3DDeviceLevel1::CreatePixelShader(
     __deref_out_ecount(1) IDirect3DPixelShader9 ** const ppOutShader
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreatePixelShader");
+#else
+
     HRESULT hr = S_OK;
 
     BEGIN_DEVICE_ALLOCATION;
@@ -4337,6 +4593,8 @@ CD3DDeviceLevel1::CreatePixelShader(
     MIL_THR(hr); // placed here to avoid stack capturing multiple times in allocation loop
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -4357,6 +4615,10 @@ CD3DDeviceLevel1::RenderTexture(
     TextureBlendMode blendMode
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::RenderTexture");
+#else
+
     AssertDeviceEntry(*this);
 
     HRESULT hr = S_OK;
@@ -4458,6 +4720,8 @@ CD3DDeviceLevel1::RenderTexture(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -4789,6 +5053,10 @@ CD3DDeviceLevel1::CreateDepthBuffer(
     __deref_out_ecount(1) CD3DSurface ** const ppSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CreateDepthBuffer");
+#else
+
     HRESULT hr = S_OK;
     IDirect3DSurface9* pD3DSurface = NULL;
 
@@ -4834,6 +5102,8 @@ CD3DDeviceLevel1::CreateDepthBuffer(
 Cleanup:
     ReleaseInterfaceNoNULL(pD3DSurface);
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -5293,6 +5563,10 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
     __range(1, UINT_MAX) UINT uVertexStreamZeroStride
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->DrawIndexedUP(uNumVertices,uPrimitiveCount,pIndexData,pVertexStreamZeroData,uVertexStreamZeroStride);
+#else
+
     HRESULT hr = S_OK;
     UINT uiNumIndices = uPrimitiveCount*3;
     void *pvDataVertices = NULL;
@@ -5456,6 +5730,8 @@ Cleanup:
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -5476,6 +5752,10 @@ CD3DDeviceLevel1::DrawIndexedTriangleList(
     UINT cPrimitives
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->DrawIndexed(cPrimitives*3,uStartIndex,static_cast<INT>(uBaseVertexIndex));
+#else
+
     HRESULT hr = S_OK;
     MtSetDefault(Mt(D3DDrawIndexedPrimitive));
 
@@ -5492,6 +5772,8 @@ CD3DDeviceLevel1::DrawIndexedTriangleList(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -5509,6 +5791,10 @@ CD3DDeviceLevel1::DrawTriangleList(
     UINT cPrimitives
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->Draw(D3DPT_TRIANGLELIST,cPrimitives*3,uStartVertex);
+#else
+
     HRESULT hr = S_OK;
     MtSetDefault(Mt(D3DDrawPrimitive));
 
@@ -5522,6 +5808,8 @@ CD3DDeviceLevel1::DrawTriangleList(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -5539,6 +5827,10 @@ CD3DDeviceLevel1::DrawTriangleStrip(
     UINT cPrimitives
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->Draw(D3DPT_TRIANGLESTRIP,cPrimitives+2,uStartVertex);
+#else
+
     HRESULT hr = S_OK;
     MtSetDefault(Mt(D3DDrawPrimitive));
 
@@ -5552,6 +5844,8 @@ CD3DDeviceLevel1::DrawTriangleStrip(
 
 Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -5715,6 +6009,10 @@ CD3DDeviceLevel1::CopyD3DTexture(
     __inout_ecount(1) IDirect3DTexture9 *pD3DDestinationTexture
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::CopyD3DTexture");
+#else
+
     HRESULT hr = S_OK;
 
     IDirect3DSurface9 *pD3DSurfaceSource      = NULL;
@@ -5736,6 +6034,8 @@ Cleanup:
     ReleaseInterfaceNoNULL(pD3DSurfaceDestination);
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -5768,6 +6068,10 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
     UINT uVertexStreamZeroStride
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->DrawUP(primitiveType,uPrimitiveCount,pVertexStreamZeroData,uVertexStreamZeroStride);
+#else
+
     HRESULT hr = S_OK;
     void *pvData = NULL;
     UINT uNumVertices = 0;
@@ -5964,6 +6268,8 @@ Cleanup:
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -5986,6 +6292,10 @@ CD3DDeviceLevel1::DrawVideoToSurface(
     __deref_opt_out_ecount(1) IWGXBitmapSource ** const ppBitmapSource
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::DrawVideoToSurface");
+#else
+
     HRESULT hr = S_OK;
 
     Assert(m_pD3DDevice);
@@ -6003,6 +6313,8 @@ CD3DDeviceLevel1::DrawVideoToSurface(
 Cleanup:
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -6019,6 +6331,10 @@ CD3DDeviceLevel1::CheckDeviceState(
     __in_opt HWND hwnd
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->DeviceStatus();
+#else
+
     HRESULT hr = S_OK;
 
     //
@@ -6062,6 +6378,8 @@ Cleanup:
     EventWriteWClientUceCheckDeviceStateInfo(hwnd, hr);
 
     RRETURN1(hr, S_PRESENT_OCCLUDED);
+
+#endif
 }
 
 
@@ -6077,6 +6395,10 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::WaitForVBlank(UINT uSwapChainIndex)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::WaitForVBlank");
+#else
+
     BEGIN_MILINSTRUMENTATION_HRESULT_LIST_WITH_DEFAULTS
         WGXERR_NO_HARDWARE_DEVICE
     END_MILINSTRUMENTATION_HRESULT_LIST
@@ -6127,6 +6449,8 @@ CD3DDeviceLevel1::WaitForVBlank(UINT uSwapChainIndex)
 
   Cleanup:
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -6253,6 +6577,10 @@ CD3DDeviceLevel1::GetNumQueuedPresents(
     __out_ecount(1) UINT *puNumQueuedPresents
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return m_facade->GetNumQueuedPresents(puNumQueuedPresents);
+#else
+
     HRESULT hr = S_OK;
     bool fForceFlush = (m_uNumSuccessfulPresentsSinceMarkerFlush >= NUM_PRESENTS_BEFORE_GPU_MARKER_FLUSH);
 
@@ -6293,6 +6621,8 @@ CD3DDeviceLevel1::GetNumQueuedPresents(
 
 Cleanup:
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -6311,6 +6641,10 @@ CD3DDeviceLevel1::InsertGPUMarker(
     ULONGLONG ullMarkerId
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::InsertGPUMarker");
+#else
+
     HRESULT hr = S_OK;
     CGPUMarker *pMarker = NULL;
 
@@ -6413,6 +6747,8 @@ CD3DDeviceLevel1::InsertGPUMarker(
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -6435,6 +6771,10 @@ HRESULT CD3DDeviceLevel1::IsConsumedGPUMarker(
     __out_ecount(1) bool *pfMarkerConsumed
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::IsConsumedGPUMarker");
+#else
+
     HRESULT hr = S_OK;
 
     Assert(m_rgpMarkerActive.GetCount() > 0);
@@ -6476,6 +6816,8 @@ HRESULT CD3DDeviceLevel1::IsConsumedGPUMarker(
     }
 
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -6524,7 +6866,13 @@ CD3DDeviceLevel1::InitializeIMediaDeviceConsumer(
     __in_ecount(1) IMediaDeviceConsumer *pIMediaDeviceConsumer
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkFacadeUnimpl("CD3DDeviceLevel1::InitializeIMediaDeviceConsumer"); return;
+#else
+
     pIMediaDeviceConsumer->SetIDirect3DDevice9(m_pD3DDevice);
+
+#endif
 }
 
 #if DBG
@@ -6577,6 +6925,10 @@ DbgInjectDIE(
 HRESULT
 CD3DDeviceLevel1::PrepareShaderEffectPipeline(bool useVS30)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::PrepareShaderEffectPipeline");
+#else
+
     HRESULT hr = S_OK;
     CD3DVertexXYZDUV2* pVertices = NULL;
 
@@ -6641,6 +6993,8 @@ Cleanup:
     }
 
     RRETURN(HandleDIE(hr));
+
+#endif
 }
 
 
@@ -6657,6 +7011,10 @@ Cleanup:
 HRESULT
 CD3DDeviceLevel1::SetPassThroughPixelShader()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    return QkFacadeUnimpl("CD3DDeviceLevel1::SetPassThroughPixelShader");
+#else
+
     HRESULT hr = S_OK;
 
     if (m_pEffectPipelinePassThroughPixelShader == NULL)
@@ -6668,6 +7026,8 @@ CD3DDeviceLevel1::SetPassThroughPixelShader()
 
 Cleanup:
     RRETURN(hr);
+
+#endif
 }
 
 //+-----------------------------------------------------------------------------

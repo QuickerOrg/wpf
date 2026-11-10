@@ -992,6 +992,9 @@ CDisplaySet::Init()
     // GPU scene trial renders legacy targets in software. Reuse the existing
     // no-D3D display enumeration path instead of opening an unused D3D9 driver.
     // Both switches are required; normal WPF keeps its original behavior.
+#if QUICKER_WPF_D3D11_FACADE
+    m_hrD3DInitialization = S_OK;
+#else
     WCHAR gpuScene[4] = {}, skipProbe[4] = {};
     const bool skipLegacyProbe =
         GetEnvironmentVariableW(L"QUICKER_WPF_GPU_SCENE", gpuScene, ARRAYSIZE(gpuScene)) == 1 && gpuScene[0] == L'1' &&
@@ -1001,6 +1004,7 @@ CDisplaySet::Init()
         : CD3DModuleLoader::CreateD3DObjects(&m_pID3D, &m_pID3DEx);
 
     Assert(FAILED(m_hrD3DInitialization) == (m_pID3D == NULL));
+#endif
 
     ReadRequiredVideoDriverDate();
 
@@ -1013,6 +1017,9 @@ CDisplaySet::Init()
         IFC( ArrangeDXAdapters() );
     }
 
+#if QUICKER_WPF_D3D11_FACADE
+    m_uD3DAdapterCount = m_rgpDisplays.GetCount();
+#endif
     IFC(ReadDisplayModes());
 
     ComputeDisplayBounds();
@@ -2655,6 +2662,20 @@ CDisplay::ReadGraphicsAccelerationCaps(
     __in_ecount(1) IDirect3D9 *pID3D
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    D3DCAPS9 caps = {};
+    if (SUCCEEDED(QkReadFacadeCaps(m_hMonitor, &caps, &m_uMemorySize, &m_luidD3DAdapter)))
+    {
+        caps.AdapterOrdinal = m_uDisplayIndex;
+        m_Caps.MaxTextureWidth = caps.MaxTextureWidth; m_Caps.MaxTextureHeight = caps.MaxTextureHeight;
+        m_Caps.WindowCompatibleMode = TRUE; m_Caps.HasWDDMSupport = TRUE;
+        m_Caps.PixelShaderVersion = caps.PixelShaderVersion; m_Caps.VertexShaderVersion = caps.VertexShaderVersion;
+        m_Caps.TierValue = GraphicsAccelerationTier::GetTier(m_uMemorySize, caps);
+        m_Caps.HasSSE2Support = CCPUInfo::HasSSE2ForEffects(); m_fIsRecentDriver = true;
+    }
+    return;
+#else
+
     // Report tier 0 by default - should already be set
     Assert(m_Caps.TierValue == MIL_TIER(0,0));
 
@@ -2727,6 +2748,8 @@ CDisplay::ReadGraphicsAccelerationCaps(
             }
         }
     }
+
+#endif
 }
 
 

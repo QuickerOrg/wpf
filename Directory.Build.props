@@ -1,4 +1,8 @@
 <Project>
+  <!-- 必须早于 Arcade 的目录求值：隔离整个引用图的 obj/bin/PCH/静态库。 -->
+  <PropertyGroup Condition="'$(WpfD3D11Facade)' == 'true'">
+    <ArtifactsDir>$(MSBuildThisFileDirectory)artifacts-facade\</ArtifactsDir>
+  </PropertyGroup>
   <PropertyGroup>
     <RepositoryName>wpf</RepositoryName>
     <PackageProjectUrl>https://github.com/dotnet/wpf</PackageProjectUrl>

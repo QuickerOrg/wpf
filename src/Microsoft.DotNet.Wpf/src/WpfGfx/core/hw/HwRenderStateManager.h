@@ -135,7 +135,7 @@ class CHwRenderStateManager :
 {
 public:
     static __checkReturn HRESULT Create(
-        __inout_ecount(1) IDirect3DDevice9 *pD3DDevice,
+        __inout_ecount(1) QkStateHandle *pD3DDevice,
         DWORD dwMaxBlendStages,
         BOOL fCanHandleBlendFactor,
         BOOL fSupportsScissorRect,
@@ -507,7 +507,11 @@ public:
 
     MIL_FORCEINLINE HRESULT SetConvolutionMonoKernel(UINT width, UINT height)
     {
+#if QUICKER_WPF_D3D11_FACADE
+        return QkFacadeUnimpl("SetConvolutionMonoKernel");
+#else
         return m_pID3DDeviceEx->SetConvolutionMonoKernel(width, height, NULL, NULL);
+#endif
     }
 
     //
@@ -555,7 +559,7 @@ public:
     }
 
     MIL_FORCEINLINE HRESULT SetStreamSource(
-        __in_ecount_opt(1) IDirect3DVertexBuffer9 *pStream,
+        __in_ecount_opt(1) QkVertexBufferHandle *pStream,
         UINT uVertexStride
         )
     {
@@ -572,7 +576,7 @@ public:
     }
 
     HRESULT SetIndices(
-        __in_ecount_opt(1) IDirect3DIndexBuffer9 *pStream
+        __in_ecount_opt(1) QkIndexBufferHandle *pStream
         )
     {
         if (!m_indexStream.IsStateSet(0, pStream))
@@ -671,11 +675,11 @@ private:
         );
 
     HRESULT ForceSetIndices(
-        __in_ecount_opt(1) IDirect3DIndexBuffer9 *pStream
+        __in_ecount_opt(1) QkIndexBufferHandle *pStream
         );
 
     HRESULT ForceSetStreamSource(
-        __in_ecount_opt(1) IDirect3DVertexBuffer9 *pStream,
+        __in_ecount_opt(1) QkVertexBufferHandle *pStream,
         UINT uVertexStride
         );
 
@@ -684,7 +688,7 @@ private:
 #endif
 
     HRESULT Init(
-        __inout_ecount(1) IDirect3DDevice9 *pD3DDevice,
+        __inout_ecount(1) QkStateHandle *pD3DDevice,
         DWORD dwMaxBlendStages,
         BOOL fCanHandleBlendFactor,
         BOOL fSupportsScissorRect,
@@ -712,7 +716,7 @@ private:
     //
     // D3D Device our state setting functions will be called on
     //
-    IDirect3DDevice9* m_pID3DDevice;
+    QkStateHandle* m_pID3DDevice;
     IDirect3DDevice9Ex* m_pID3DDeviceEx;
 
     //
@@ -771,10 +775,10 @@ private:
     //
     // Streams
     //
-    CStateTable<IDirect3DIndexBuffer9 *> m_indexStream;
+    CStateTable<QkIndexBufferHandle *> m_indexStream;
 
     CStateTable<UINT> m_streamSourceVertexStride;
-    CStateTable<IDirect3DVertexBuffer9 *> m_streamSourceVertexBuffer;
+    CStateTable<QkVertexBufferHandle *> m_streamSourceVertexBuffer;
 
     //
     // Scissor rect

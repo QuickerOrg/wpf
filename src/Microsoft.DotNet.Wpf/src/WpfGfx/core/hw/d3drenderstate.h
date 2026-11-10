@@ -381,7 +381,7 @@ public:
     }
 
     MIL_FORCEINLINE HRESULT SetStreamSource(
-        __in_ecount_opt(1) IDirect3DVertexBuffer9 *pStream,
+        __in_ecount_opt(1) QkVertexBufferHandle *pStream,
         UINT uVertexStride
         )
     {
@@ -393,7 +393,7 @@ public:
     }
 
     MIL_FORCEINLINE HRESULT SetIndices(
-        __in_ecount_opt(1) IDirect3DIndexBuffer9 *pStream
+        __in_ecount_opt(1) QkIndexBufferHandle *pStream
         )
     {
         return m_pStateManager->SetIndices(

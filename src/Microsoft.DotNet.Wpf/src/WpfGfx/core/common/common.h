@@ -90,6 +90,7 @@
 #include "dwritefactory.h"
 
 #include "renderoptions.h"
+#include "d3d11facade.h"
 
 //
 // Logging support flags
