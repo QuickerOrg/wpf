@@ -14,6 +14,7 @@
 
 
 #include "precomp.hpp"
+#include "quicker-effect-trace.h"
 
 MtDefine(DropShadowEffectResource, MILRender, "DropShadowEffect Resource");
 MtDefine(CMilDropShadowEffectDuce, DropShadowEffectResource, "CMilDropShadowEffectDuce");
@@ -602,6 +603,7 @@ CMilDropShadowEffectDuce::ApplyEffect(
     }
 
     // If there is no visible shadow, simply draw the original texture.
+    QkCaptureEffectInput(pTextureNoRef_A->GetD3DTextureNoRef());
     if (GetOpacity() == 0.0)
     { 
         IFC(SetupVertexTransform(
@@ -628,6 +630,7 @@ CMilDropShadowEffectDuce::ApplyEffect(
         IFC(pDestRT->EnsureState(pContextState));
         IFC(pDevice->SetPassThroughPixelShader());
         IFC(pDevice->SetAlphaBlendMode(&CD3DRenderState::sc_abmSrcOverPremultiplied));
+        QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
         IFC(pDevice->DrawTriangleStrip(0, 2));
     }
     // If there is a visible shadow we will need to draw into the destination texture
@@ -685,7 +688,8 @@ CMilDropShadowEffectDuce::ApplyEffect(
             // Set the shadow shader for this pass
             IFC(SetupShader(pDevice, pScaleTransform, static_cast<float>(uIntermediateWidth), static_cast<float>(uIntermediateHeight)));
             IFC(pDevice->SetAlphaBlendMode(&CD3DRenderState::sc_abmSrcOverPremultiplied));
-            IFC(pDevice->DrawTriangleStrip(0, 2));
+            QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
+        IFC(pDevice->DrawTriangleStrip(0, 2));
         }
      
     }

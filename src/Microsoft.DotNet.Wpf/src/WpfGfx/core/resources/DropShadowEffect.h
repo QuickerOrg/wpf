@@ -18,6 +18,7 @@ MtExtern(CMilDropShadowEffectDuce);
 class CMilDropShadowEffectDuce : public CMilEffectDuce
 {
     friend class CResourceFactory;
+    friend class CQuickerNativeContractRT;
 
 protected:
 

@@ -625,7 +625,22 @@ Cleanup:
 //-------------------------------------------------------------------------
 HRESULT
 CHwRasterizer::Setup(
-    __in_ecount(1)       CD3DDeviceLevel1 *pD3DDevice,
+    CD3DDeviceLevel1 *device,
+    const IShapeData *shape,
+    DynArray<MilPoint2F> *points,
+    DynArray<BYTE> *types,
+    const CMatrix<CoordinateSpace::Shape,CoordinateSpace::Device> *matrix)
+{
+    MilPointAndSizeL clip;
+    device->GetClipRect(&clip);
+    HRESULT hr = SetupWithClip(clip, shape, points, types, matrix);
+    m_pDeviceNoRef = device;
+    RRETURN(hr);
+}
+
+HRESULT
+CHwRasterizer::SetupWithClip(
+    const MilPointAndSizeL &clipBounds,
     __in_ecount(1) const IShapeData       *pShape,
     __inout_ecount(1) DynArray<MilPoint2F> *prgPointsScratch,
     __inout_ecount(1) DynArray<BYTE>      *prgTypesScratch,
@@ -653,7 +668,7 @@ CHwRasterizer::Setup(
     // Initialize the coverage buffer
     m_coverageBuffer.Initialize();
 
-    m_pDeviceNoRef = pD3DDevice;
+    m_pDeviceNoRef = NULL;
 
     //
     // PS#856364-2003/07/01-ashrafm  Remove pixel center fixup
@@ -686,7 +701,7 @@ CHwRasterizer::Setup(
     // Set local state.
     //
 
-    pD3DDevice->GetClipRect(&m_rcClipBounds);
+    m_rcClipBounds = clipBounds;
 
     IFC(pShape->ConvertToGpPath(*m_prgPoints, *m_prgTypes));
 

@@ -16,6 +16,7 @@
 //
 
 #include "precomp.hpp"
+#include "quicker-pg-d3d9-dump.h"
 
 //+----------------------------------------------------------------------------
 //
@@ -181,6 +182,8 @@ CD3DSwapChainWithSwDC::GetDC(
         DBG_ANALYSIS_PARAM_COMMA(m_cbBuffer - cbBufferInset)
         pbBuffer
         ));
+
+    QkPgDumpBackBuffer(m_pBuffer, surfDesc.Width, surfDesc.Height, m_stride, surfDesc.Format);
 
     *phdcBackBuffer = m_hdcCopiedBackBuffer;
 

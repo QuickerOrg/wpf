@@ -16,6 +16,10 @@
 //
 
 #include "precomp.hpp"
+#include "../glyph/quicker-text-trace.h"
+#include "../uce/quicker-coverage-sink.h"
+#include "../uce/quicker-aliased-geometry-sink.h"
+#include "../uce/quicker-mask-trace.h"
 
 
 MtDefine(CHwSurfaceRenderTarget, MILRender, "CHwSurfaceRenderTarget");
@@ -2083,6 +2087,7 @@ Cleanup:
     if (   hr == WGXERR_DEVICECANNOTRENDERTEXT
         || hr == E_NOTIMPL)
     {
+        QkTraceTextState("software-fallback",(DWORD)hr,0,fTargetSupportsClearType,nullptr);
         MIL_THR(SoftwareDrawGlyphs(
             pars, 
             fTargetSupportsClearType,
@@ -2543,6 +2548,11 @@ HRESULT CHwSurfaceRenderTarget::EndLayerInternal(
     // Render fixups
     //
 
+    WCHAR trace[4];if(layer.pGeometricMaskShape&&GetEnvironmentVariableW(L"QUICKER_G0C_TEXT_TRACE",trace,4)){
+        MilPointAndSizeL clip;m_pD3DDevice->GetClipRect(&clip);INT box[]={clip.X,clip.Y,clip.X+clip.Width,clip.Y+clip.Height};
+        if(layer.AntiAliasMode!=MilAntiAliasMode::None){DynArray<MilPoint2F> points;DynArray<BYTE> types;CHwRasterizer raster;QkCoverageSink sink;if(SUCCEEDED(raster.SetupWithClip(clip,layer.pGeometricMaskShape,&points,&types,nullptr))&&SUCCEEDED(raster.SendGeometry(&sink)))QkTraceMaskVertices(L"old",static_cast<UINT>(layer.AntiAliasMode),box,layer.rAlpha,sink.vertices.data(),static_cast<UINT>(sink.vertices.size()));}
+        else{CShape inverse;QkAliasedGeometrySink sink;CFillTessellator* tess=nullptr;CDispensableBuffer<QkAliasedGeometrySink::TessellatorBufferSize,1> temp;if(SUCCEEDED(CShapeBase::Combine(&boundShape,layer.pGeometricMaskShape,MilCombineMode::Xor,false,&inverse))&&SUCCEEDED(inverse.SetupFillTessellator(nullptr,&temp,&tess))&&tess&&SUCCEEDED(tess->SendGeometry(&sink)))QkTraceMaskVertices(L"old",static_cast<UINT>(layer.AntiAliasMode),box,layer.rAlpha,sink.vertices.data(),static_cast<UINT>(sink.vertices.size()));delete tess;}
+    }
     bool fNeedConstantAlphaFixup = !AlphaScalePreservesOpacity(layer.rAlpha);
 
     //

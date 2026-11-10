@@ -10,6 +10,7 @@
 //---------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "quicker-surface-source.h"
 
 DeclareTag(tagTintPushOpacitySurfaces, "MIL", "Tint PushOpacity intermediate surfaces");
 MtDefine(CDrawingContext, MILRender, "CDrawingContext");
@@ -3774,6 +3775,7 @@ CDrawingContext::CalculateEffectTextureLimits(
         
         uMaxWidth = caps.MaxTextureWidth;
         uMaxHeight = caps.MaxTextureHeight;
+        IQuickerSurfaceSource* port=nullptr;if(SUCCEEDED(m_pIRenderTarget->QueryInterface(IID_IQuickerSurfaceSource,reinterpret_cast<void**>(&port)))){UINT limit=0;bool quality=false;HRESULT result=port->GetSurfaceCapabilities(&limit,&quality);port->Release();IFC(result);uMaxWidth=uMaxHeight=limit;}
     }
     else
     {
@@ -5338,6 +5340,7 @@ CDrawingContext::DetermineEffectCompositionMode(
     )
 {
     HRESULT hr = S_OK;
+    IQuickerSurfaceSource* port=nullptr;if(SUCCEEDED(m_pIRenderTarget->QueryInterface(IID_IQuickerSurfaceSource,reinterpret_cast<void**>(&port)))){HRESULT result=port->CheckSurfaceEffect(pEffect);port->Release();if(FAILED(result))return result;*pEffectCompositionMode=RenderCompatible;return S_OK;}
     
     // Note that the call to GetType() will return HW for Meta RTs if any of the
     // displays is being rendered in hardware.  This means that on any software

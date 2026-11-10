@@ -20,6 +20,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../glyph/quicker-text-trace.h"
 
 CD3DGlyphRunPainter::CD3DGlyphRunPainter()
 {
@@ -103,6 +104,7 @@ CD3DGlyphRunPainter::Paint(
     // Set rendering state
 
     IFC(InspectBrush(pars, fmtTargetSurface));
+    {float m[]={m_xfGlyphWR.m_00,m_xfGlyphWR.m_01,m_xfGlyphWR.m_10,m_xfGlyphWR.m_11,m_xfGlyphWR.m_20,m_xfGlyphWR.m_21};QkTraceTextState("hardware",m_data.color,pars.pGlyphRun->GetGammaIndex(),fClearType,m);}
 
     if (m_data.m_pHwColorSource == NULL)
     {   // solid brush
@@ -206,8 +208,15 @@ CD3DGlyphRunPainter::Paint(
         m_data.blueOffset = blueOffset;
         m_data.ds = dxW * m_data.kxWT;
         m_data.dt = dyW * m_data.kyWT;
+        QkTraceGpuText(m_data.pMaskTexture);
+        {float q[]={m_data.kxWT,m_data.kyWT,m_data.dxWT,m_data.dyWT,m_xMin,m_yMin};QkTraceTextState("gpu-mapping",0,0,false,q);}
 
+        auto qkSample=QkTextSampleBegin(m_data.pMaskTexture);
+        if(FAILED(qkSample.hr)){QkTextSampleEnd(m_data.pMaskTexture,qkSample);hr=qkSample.hr;goto Cleanup;}
+        DWORD qkOldAlpha=QkTextRawBegin(m_data.pMaskTexture);
         MIL_THR((this->*m_pfnDrawRectangle)());
+        QkTextRawEnd(m_data.pMaskTexture,qkOldAlpha);
+        QkTextSampleEnd(m_data.pMaskTexture,qkSample);
 
         if (!m_pGlyphRun->IsPersistent())
         {

@@ -45,6 +45,14 @@ public:
         __in_ecount_opt(1) CMatrix<CoordinateSpace::Shape,CoordinateSpace::Device> const *pmatWorldToDevice
         );
 
+    // P-G：设备无关的相同几何算法，旧 Setup 仍用于 D3D9 对照。
+    HRESULT SetupWithClip(
+        const MilPointAndSizeL &clipBounds,
+        const IShapeData *pShape,
+        DynArray<MilPoint2F> *points,
+        DynArray<BYTE> *types,
+        const CMatrix<CoordinateSpace::Shape,CoordinateSpace::Device> *matrix);
+
     //
     // IGeometryGenerator methods
     //

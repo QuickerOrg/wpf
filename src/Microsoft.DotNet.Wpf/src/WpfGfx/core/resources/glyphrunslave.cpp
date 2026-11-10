@@ -14,6 +14,8 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "quicker-glyph-state-trace.h"
+UINT64 QkG0hCompositionFrame(){return static_cast<UINT64>(CComposition::GetFrameLastComposed());}
 
 MtDefine(CGlyphRunResource, MILRender, "CGlyphRunResource");
 MtDefine(CGlyphRunRealization, CGlyphRunResource, "CGlyphRunRealization");
@@ -687,6 +689,7 @@ CGlyphRunResource::GetAvailableScale(
     *pScaleX = pRealization->GetScaleX();
     *pScaleY = pRealization->GetScaleY();
 
+    QkG0hGlyphTrace("selected",this,pRealization,requestedScaleX,requestedScaleY,currentRealizationFrame);
     *ppRealization = pRealization;
     pRealization = NULL;
 
@@ -1516,6 +1519,8 @@ CGlyphRunResource::SnapToScaleGrid(
 //      Constructor.
 //
 //------------------------------------------------------------------------------
+static volatile LONG64 s_qkGlyphIdentity=0;
+
 CGlyphRunRealization::CGlyphRunRealization(
     __in float scaleX,
     __in float scaleY,
@@ -1523,6 +1528,7 @@ CGlyphRunRealization::CGlyphRunRealization(
     __in CMilSlaveGlyphCache *pGlyphCacheSlave
     )
 {
+    m_qkIdentity=static_cast<UINT64>(InterlockedIncrement64(&s_qkGlyphIdentity));
     m_scaleX     = scaleX;
     m_scaleY     = scaleY;
 
@@ -1796,6 +1802,7 @@ CGlyphRunRealization::EnsureValidAlphaMap(__in const EnhancedContrastTable *pECT
             }
         }        
  
+        ++m_qkAlphaGeneration;
         m_pGlyphCacheNoRef->AddRealization(this, m_textureSize);
     }
 Cleanup:

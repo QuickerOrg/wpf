@@ -14,6 +14,7 @@
 //---------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "quicker-quality-capture.h"
 #include "quicker-native-contract-target.h"
 #include "../common/quicker-wheel-pacing.h"
 #include <shellscalingapi.h>
@@ -272,6 +273,7 @@ CSlaveHWndRenderTarget::Render(
     *pfNeedsPresent = m_fNeedsPresent;
 
 Cleanup:
+    {WCHAR root[768];if(GetEnvironmentVariableW(L"QUICKER_G0G_CAPTURE_DIR",root,768)){WCHAR file[1024];_snwprintf_s(file,1024,_TRUNCATE,L"%s/render-audit.csv",root);FILE* f=nullptr;_wfopen_s(&f,file,L"a");if(f){fprintf(f,"%p,%08x,%d,%d,%d,%p,%p,%Iu\n",m_hWnd,hr,m_fRenderingEnabled,m_fNoScreenAccess,m_fIsZombie,m_pRoot,m_pRenderTarget,static_cast<ULONG_PTR>(GetWindowLongPtrW(m_hWnd,GWL_EXSTYLE)));fclose(f);}}}
     if (FAILED(hr))
     {
         m_fNeedsPresent = false;
@@ -307,7 +309,7 @@ CSlaveHWndRenderTarget::Present()
             && !m_fIsZombie)
         {
 
-            IFC(m_pRenderTarget->Present());
+            {QkQualityCaptureScope capture(m_hWnd);HRESULT presentHr=m_pRenderTarget->Present();capture.Finish(presentHr);IFC(presentHr);}
             if (g_uMilPerfInstrumentationFlags & MilPerfInstrumentation_SignalPresent)
             {
                 // Special perf measurement instrumentation:
@@ -915,12 +917,15 @@ CSlaveHWndRenderTarget::EnsureRenderTargetInternal()
 
         pMILFactory = m_pComposition->GetMILFactory();
 
-        if (CQuickerNativeContractRT::Enabled(m_hWnd))
+        bool nativeRequested=CQuickerNativeContractRT::Enabled(m_hWnd);
+        bool layered=(GetWindowLongPtrW(m_hWnd,GWL_EXSTYLE)&WS_EX_LAYERED)!=0;
+        if (nativeRequested && layered)
         {
             IFC(CQuickerNativeContractRT::Create(m_hWnd, &m_pRenderTarget));
         }
         else
         {
+            if(nativeRequested){creationFlags=static_cast<MilRTInitialization::Flags>((creationFlags & ~MilRTInitialization::TypeMask)|MilRTInitialization::SoftwareOnly);SetPropW(m_hWnd,L"Quicker.NativeOpaqueSoftware",reinterpret_cast<HANDLE>(1));}
             IFC(pMILFactory->CreateDesktopRenderTarget(
                 m_hWnd,
                 m_WindowLayerType,

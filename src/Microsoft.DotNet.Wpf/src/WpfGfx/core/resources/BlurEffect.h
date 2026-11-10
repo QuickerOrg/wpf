@@ -48,6 +48,7 @@ typedef void (__stdcall *GenerateColorsBlur)(
 class CMilBlurEffectDuce : public CMilEffectDuce
 {
     friend class CResourceFactory;
+    friend class CQuickerNativeContractRT;
 
 public:
     __override virtual bool IsOfType(MIL_RESOURCE_TYPE type) const

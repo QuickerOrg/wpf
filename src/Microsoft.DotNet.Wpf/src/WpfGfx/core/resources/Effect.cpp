@@ -11,6 +11,7 @@
 
 
 #include "precomp.hpp"
+#include "../glyph/quicker-text-trace.h"
 using namespace dxlayer;
 
 extern HINSTANCE g_DllInstance;
@@ -226,6 +227,7 @@ CMilEffectDuce::SetupVertexTransform(
     //
     matVertexTransform = matVertexTransform.transpose();
 
+    for(UINT i=0;i<4;i++){float v[6]{};memcpy(v,reinterpret_cast<const float*>(&matVertexTransform)+i*4,4*sizeof(float));QkTraceTextState(passToFinalDestination?"old-effect-matrix":"old-intermediate-matrix",i,0,false,v);}
     // Send our transform to the vertex shader.
     IFC(pDevice->SetVertexShaderConstantF(0, reinterpret_cast<const float *>(&matVertexTransform), 4));
 

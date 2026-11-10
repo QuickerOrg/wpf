@@ -14,6 +14,7 @@
 //
 
 #include "precomp.hpp"
+#include "../resources/quicker-glyph-state-trace.h"
 
 MtDefine(CMilSlaveGlyphCache, MILRender, "CMilSlaveGlyphCache");
 
@@ -158,6 +159,7 @@ CMilSlaveGlyphCache::ProcessPendingAnimations()
        
         if (currentRealizationFrame >= m_animatingGlyphRunArray[i].RequestedCallbackFrame)
         {
+            QkG0hGlyphTrace("callback",m_animatingGlyphRunArray[i].pAnimatingGlyphRunNoRef,nullptr,0,0,currentRealizationFrame);
             m_animatingGlyphRunArray[i].pAnimatingGlyphRunNoRef->AnimationTimeoutCallback();
             m_animatingGlyphRunArray.RemoveAt(i);
         }
@@ -222,6 +224,7 @@ CMilSlaveGlyphCache::RequestSubsequentPass(__in CGlyphRunResource *pGlyphRunReso
         newRequest.pAnimatingGlyphRunNoRef = pGlyphRunResource;
         IFC(m_animatingGlyphRunArray.Add(newRequest));
     }
+    QkG0hGlyphTrace("request",pGlyphRunResource,nullptr,0,0,GetCurrentRealizationFrame());
     m_pComposition->ScheduleCompositionPass();
 
 Cleanup:

@@ -10,6 +10,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.h"
+#include "../resources/quicker-glyph-state-trace.h"
 
 //==============================================================================
 
@@ -224,6 +225,8 @@ CBaseGlyphRunPainter::PrepareTransforms()
     //
     m_xfGlyphRW.SetInverse(m_xfGlyphWR);
 
+    {float v[]={m_xfGlyphWR.m_00,m_xfGlyphWR.m_01,m_xfGlyphWR.m_10,m_xfGlyphWR.m_11,m_xfGlyphWR.m_20,m_xfGlyphWR.m_21};QkG0hGlyphTrace("prepared",m_pGlyphRunResource,m_pRealization,m_scaleX,m_scaleY,0,v);}
+
     RRETURN(hr);
 }
 
@@ -239,6 +242,8 @@ CBaseGlyphRunPainter::PrepareTransforms()
 //       - filtered alpha array
 //
 //------------------------------------------------------------------------------
+#include "quicker-glyph-capture.h"
+
 void
 CBaseGlyphRunPainter::MakeAlphaMap(
     __inout_ecount(1) CBaseGlyphRun *pRun
@@ -248,6 +253,7 @@ CBaseGlyphRunPainter::MakeAlphaMap(
         &m_pAlphaArray, 
         &m_alphaArraySize,
         &(pRun->m_rcFiltered));
+    QkCaptureGlyphAlpha(m_pAlphaArray,m_alphaArraySize,pRun->m_rcFiltered);
 
     if (IsRectEmpty(&(pRun->m_rcFiltered)))
     {

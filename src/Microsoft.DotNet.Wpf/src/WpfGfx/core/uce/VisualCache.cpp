@@ -10,6 +10,7 @@
 //-----------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "quicker-surface-source.h"
 
 MtDefine(CMilVisualCache, MILRender, "VisualCache resource");
 
@@ -252,12 +253,25 @@ CMilVisualCache::GetRealizationDimensions(
         UINT uMaxHeight;
         if (renderTargetType == HWRasterRenderTarget)
         {            
-            Assert(m_pDisplaySet);
-            MilGraphicsAccelerationCaps caps;
-            m_pDisplaySet->GetGraphicsAccelerationCaps(true, NULL, &caps);
-            
-            uMaxWidth = caps.MaxTextureWidth;
-            uMaxHeight = caps.MaxTextureHeight;
+            IQuickerSurfaceSource* native = nullptr;
+            if (SUCCEEDED(pIRTInternal->QueryInterface(IID_IQuickerSurfaceSource, reinterpret_cast<void**>(&native))))
+            {
+                // 新目标的纹理限制来自实际D3D11能力；禁用旧设备探测后的D3D9 caps为0。
+                UINT limit = 0; bool quality = false;
+                HRESULT capsHr = native->GetSurfaceCapabilities(&limit, &quality);
+                native->Release();
+                IFC(capsHr);
+                if (!limit) IFC(E_UNEXPECTED);
+                uMaxWidth = uMaxHeight = limit;
+            }
+            else
+            {
+                Assert(m_pDisplaySet);
+                MilGraphicsAccelerationCaps caps;
+                m_pDisplaySet->GetGraphicsAccelerationCaps(true, NULL, &caps);
+                uMaxWidth = caps.MaxTextureWidth;
+                uMaxHeight = caps.MaxTextureHeight;
+            }
         }
         else
         {

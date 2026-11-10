@@ -330,6 +330,9 @@ public:
     HRESULT GetD3DGlyphRun(UINT index, CD3DGlyphRun**);
     void SetD3DGlyphRun(UINT index, CD3DGlyphRun *pRun);
 
+    UINT64 GetPortGlyphIdentity() const { return m_qkIdentity; }
+    UINT64 GetPortAlphaGeneration() const { return m_qkAlphaGeneration; }
+
     UTC_TIME CreatedFrame() const
     {
         return m_createdFrame;
@@ -415,6 +418,7 @@ public:
     }
 
 private:
+    UINT64 m_qkIdentity=0,m_qkAlphaGeneration=0;
      HRESULT RealizeAlphaBoundsAndTextures(  
         DWRITE_TEXTURE_TYPE textureType, 
         __in_opt const EnhancedContrastTable *pECT,

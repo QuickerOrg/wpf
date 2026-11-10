@@ -14,6 +14,7 @@
 
 
 #include "precomp.hpp"
+#include "quicker-effect-trace.h"
 
 MtDefine(BlurEffectResource, MILRender, "BlurEffect Resource");
 MtDefine(CMilBlurEffectDuce, BlurEffectResource, "CMilBlurEffectDuce");
@@ -963,6 +964,8 @@ CMilBlurEffectDuce::ApplyEffectImpl(
     // The pass information for the current radius. 
     UINT radius = 0;
     GetScaledRadius(pScaleTransform, &radius);
+    QkCaptureEffectInput(pTextureNoRef_A->GetD3DTextureNoRef());
+    {float v[]={float(uIntermediateWidth),float(uIntermediateHeight),0,0,0,0};QkTraceTextState("old-effect",radius,m_data.m_RenderingBias,pDevice->Is128BitFPTextureSupported()!=0,v);}
 
     // If the blur radius is zero, we skip the loop below and we just need to render the source into
     // the final destination texture with a pass-through shader.
@@ -1012,6 +1015,7 @@ CMilBlurEffectDuce::ApplyEffectImpl(
         // Draw our final result
         IFC(pDevice->SetPassThroughPixelShader());
         IFC(pDevice->SetAlphaBlendMode(&CD3DRenderState::sc_abmSrcOverPremultiplied));
+        QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
         IFC(pDevice->DrawTriangleStrip(0, 2));
     }
     // If the RenderingBias is Quality, we execute the blur with two intermediate FP textures.  
@@ -1108,6 +1112,7 @@ CMilBlurEffectDuce::ApplyEffectImpl(
         // Draw horizontal result to new source.  We set the source texture in ExecutePasses.
         IFC(pDevice->SetPassThroughPixelShader());
         IFC(pDevice->SetAlphaBlendMode(&CD3DRenderState::sc_abmSrcOverPremultiplied));
+        QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
         IFC(pDevice->DrawTriangleStrip(0, 2));
         
         //
@@ -1184,6 +1189,7 @@ CMilBlurEffectDuce::ApplyEffectImpl(
         // Draw final result
         IFC(pDevice->SetPassThroughPixelShader());
         IFC(pDevice->SetAlphaBlendMode(&CD3DRenderState::sc_abmSrcOverPremultiplied));
+        QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
         IFC(pDevice->DrawTriangleStrip(0, 2));
 
     }
@@ -1319,7 +1325,8 @@ CMilBlurEffectDuce::ApplyEffectImpl(
 
             // Draw final result
             IFC(pDevice->SetPassThroughPixelShader());
-            IFC(pDevice->DrawTriangleStrip(0, 2));
+            QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
+        IFC(pDevice->DrawTriangleStrip(0, 2));
              
         }
 
@@ -1428,6 +1435,7 @@ CMilBlurEffectDuce::ExecutePasses(
             sampleIndex, 
             pSamplingWeights));
 
+        QkTraceEffectDraw(pTextureNoRef_A->GetD3DTextureNoRef());
         IFC(pDevice->DrawTriangleStrip(0, 2));
 
          // Increment the sampleIndex for the next pass by adding the number we took on this pass.
