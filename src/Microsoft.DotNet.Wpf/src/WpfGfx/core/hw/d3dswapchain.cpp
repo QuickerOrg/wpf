@@ -329,6 +329,9 @@ CD3DSwapChain::ReleaseD3DResources()
     ReleaseInterface((*const_cast<IDirect3DSwapChain9 **>(&m_pD3DSwapChain)));
     ReleaseInterface((*const_cast<IDirect3DSwapChain9Ex **>(&m_pD3DSwapChainEx)));
 
+#if QUICKER_WPF_D3D11_FACADE
+    m_facadeSwapChain.Reset();
+#endif
     // Also release reference to wrapper resources for each of the back buffers.
     for (UINT i = 0; i < m_cBackBuffers; i++)
     {
@@ -394,11 +397,29 @@ CD3DSwapChain::ReleaseDC(
 
 
 #if QUICKER_WPF_D3D11_FACADE
-HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,CD3DSwapChain **out)
+HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,CD3DSwapChain **out,HWND opaqueHwnd)
 {
     *out=nullptr; CD3DSwapChain *s=new(1) CD3DSwapChain(nullptr,1,nullptr); if(!s) return E_OUTOFMEMORY;
     s->AddRef(); s->CD3DResource::Init(manager,0);
-    HRESULT hr=CD3DSurface::CreateFacade(manager,state,width,height,D3DFMT_A8R8G8B8,&s->m_rgBackBuffers[0]);
+    HRESULT hr=S_OK;
+    ComPtr<ID3D11Texture2D> backBuffer;
+    if(opaqueHwnd) {
+        ComPtr<IDXGIDevice> device; ComPtr<IDXGIAdapter> adapter; ComPtr<IDXGIFactory> factory;
+        hr=state->device.As(&device);
+        if(SUCCEEDED(hr)) hr=device->GetAdapter(&adapter);
+        if(SUCCEEDED(hr)) hr=adapter->GetParent(IID_PPV_ARGS(&factory));
+        DXGI_SWAP_CHAIN_DESC desc={}; desc.BufferDesc.Width=width; desc.BufferDesc.Height=height;
+        desc.BufferDesc.Format=DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count=1;
+        desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT|DXGI_USAGE_SHADER_INPUT;
+        desc.BufferCount=1; desc.OutputWindow=opaqueHwnd; desc.Windowed=TRUE;
+        // 最小普通窗口路径：单缓冲顺序呈现保留内容。flip/dirty present 留待 S3。
+        desc.SwapEffect=DXGI_SWAP_EFFECT_SEQUENTIAL;
+        if(SUCCEEDED(hr)) hr=factory->CreateSwapChain(state->device.Get(),&desc,&s->m_facadeSwapChain);
+        if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
+        if(SUCCEEDED(hr)) hr=s->m_facadeSwapChain->GetBuffer(0,IID_PPV_ARGS(&backBuffer));
+        char line[240]; StringCchPrintfA(line,240,"QK-FACADE DXGI opaque hwnd=%p size=%ux%u hr=0x%08x\n",opaqueHwnd,width,height,hr); QkFacadeTrace(line);
+    }
+    if(SUCCEEDED(hr)) hr=CD3DSurface::CreateFacade(manager,state,width,height,D3DFMT_A8R8G8B8,&s->m_rgBackBuffers[0],backBuffer.Get());
     if(FAILED(hr)){s->Release();return hr;}
     *out=s; return S_OK;
 }

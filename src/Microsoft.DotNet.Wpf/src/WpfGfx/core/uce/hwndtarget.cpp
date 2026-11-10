@@ -687,6 +687,10 @@ CSlaveHWndRenderTarget::ProcessUpdateWindowSettings(
         ));
 
 
+#if QUICKER_WPF_D3D11_FACADE
+    if(!m_fChild && !IsWindowVisible(m_hWnd)) QkD3D11State::TrimIfIdle();
+#endif
+
 Cleanup:
     RRETURN(hr);
 }

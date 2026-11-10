@@ -6,6 +6,8 @@
 #include <string>
 #include <regex>
 #include <sstream>
+#include <psapi.h>
+#include <dxgi1_4.h>
 
 void QkFacadeTrace(const char *line)
 {
@@ -19,6 +21,36 @@ void QkFacadeTrace(const char *line)
     DWORD written;
     WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
     CloseHandle(file);
+}
+
+// 诊断输出独立于逐 Draw 日志，避免性能测量启用高频渲染日志。
+void QkAccountEvent(const char *event)
+{
+    WCHAR path[32768]; DWORD n=GetEnvironmentVariableW(L"QUICKER_FACADE_ACCOUNT",path,ARRAYSIZE(path));
+    if(!n || n>=ARRAYSIZE(path)) return;
+    HANDLE f=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(f==INVALID_HANDLE_VALUE) return;
+    DWORD written; WriteFile(f,event,static_cast<DWORD>(strlen(event)),&written,nullptr); CloseHandle(f);
+}
+static const GUID QkAccountGuid={0x50f93e2d,0x91a7,0x4d08,{0x9b,0xb2,0x5a,0x76,0xcd,0x63,0x20,0x13}};
+class QkAccountToken : public IUnknown
+{
+    LONG refs=1;
+public:
+    const char *kind; ULONGLONG bytes; void *object; void *device;
+    void Write(int delta) { char line[320]; StringCchPrintfA(line,320,
+        "{\"event\":\"resource\",\"object\":\"%p\",\"device\":\"%p\",\"kind\":\"%s\",\"bytes\":%llu,\"delta\":%d}\n",object,device,kind,bytes,delta); QkAccountEvent(line); }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void **out) override { *out=nullptr; if(iid!=__uuidof(IUnknown)) return E_NOINTERFACE; *out=this; AddRef(); return S_OK; }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n=InterlockedDecrement(&refs); if(!n) { Write(-1); delete this; } return n; }
+};
+void QkAccount(ID3D11DeviceChild *object,const char *kind,ULONGLONG bytes)
+{
+    WCHAR path[2]; if(!object || !GetEnvironmentVariableW(L"QUICKER_FACADE_ACCOUNT",path,2)) return;
+    UINT size=0; object->GetPrivateData(QkAccountGuid,&size,nullptr); if(size) return;
+    auto token=new QkAccountToken; token->kind=kind; token->bytes=bytes; token->object=object;
+    ID3D11Device *device=nullptr; object->GetDevice(&device); token->device=device; device->Release();
+    token->Write(1); object->SetPrivateDataInterface(QkAccountGuid,token); token->Release();
 }
 
 HRESULT QkFacadeUnimpl(const char *name)
@@ -35,8 +67,92 @@ HRESULT QkFacadeUnimpl(const char *name)
     return E_NOTIMPL;
 }
 
+static bool QkAccountEnabled() { WCHAR value[2]; return GetEnvironmentVariableW(L"QUICKER_FACADE_ACCOUNT",value,2)!=0; }
+static void QkAccountBudget(ID3D11Device *device)
+{
+    if(!QkAccountEnabled()) return;
+    ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter; ComPtr<IDXGIAdapter3> adapter3;
+    if(FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgi))) || FAILED(dxgi->GetAdapter(&adapter)) || FAILED(adapter.As(&adapter3))) return;
+    for(UINT i=0;i<2;++i) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO info={}; HRESULT hr=adapter3->QueryVideoMemoryInfo(0,static_cast<DXGI_MEMORY_SEGMENT_GROUP>(i),&info);
+        char line[320]; StringCchPrintfA(line,320,"{\"event\":\"budget\",\"device\":\"%p\",\"segment\":%u,\"usage\":%llu,\"budget\":%llu,\"hr\":%ld}\n",device,i,info.CurrentUsage,info.Budget,hr); QkAccountEvent(line);
+    }
+}
+
+// 弱索引不延长设备寿命；移除的设备不会被新的显示器包装复用。
+static INIT_ONCE qkSharedOnce=INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION qkSharedLock;
+static std::vector<QkD3D11State*> qkSharedStates;
+static std::map<ID3D11DeviceContext*,QkD3D11State*> qkActiveStates;
+static std::vector<QkD3D11State*> qkEntryStack;
+static ULONGLONG qkPresentSerial=0, qkTrimmedSerial=0;
+void QkD3D11State::EnterShared() {
+    InitOnceExecuteOnce(&qkSharedOnce,[](PINIT_ONCE,PVOID,PVOID*)->BOOL { InitializeCriticalSection(&qkSharedLock); return TRUE; },nullptr,nullptr);
+    EnterCriticalSection(&qkSharedLock);
+}
+void QkD3D11State::LeaveShared() { LeaveCriticalSection(&qkSharedLock); }
+void QkD3D11State::Activate() {
+    if(!context1) return;
+    auto &active=qkActiveStates[context.Get()];
+    if(active==this) return;
+    ComPtr<ID3DDeviceContextState> previous;
+    context1->SwapDeviceContextState(savedContext.Get(),&previous);
+    // 不同适配器的上下文各自持有状态；只保存同一即时上下文的前任。
+    if(active) active->savedContext=previous;
+    active=this;
+}
+// 嵌套进入另一个显示器设备后，返回时恢复外层上下文；临时引用保护析构路径。
+void QkD3D11State::EnterState(QkD3D11State *state) {
+    auto prior=state?qkActiveStates[state->context.Get()]:nullptr;
+    if(prior) prior->AddRef();
+    qkEntryStack.push_back(prior);
+    if(state) state->Activate();
+}
+void QkD3D11State::LeaveState() {
+    auto prior=qkEntryStack.back(); qkEntryStack.pop_back();
+    if(prior) { prior->Activate(); prior->Release(); }
+}
+QkD3D11State::~QkD3D11State() {
+    EnterShared();
+    auto active=qkActiveStates.find(context.Get());
+    if(active!=qkActiveStates.end() && active->second==this) { if(context) context->ClearState(); qkActiveStates.erase(active); }
+    auto found=std::find(qkSharedStates.begin(),qkSharedStates.end(),this); if(found!=qkSharedStates.end()) qkSharedStates.erase(found);
+    // 析构成员前主动清空绑定，避免 context 持有已释放包装的资源；不 Trim 活跃兄弟设备。
+    bool last=true; for(auto state:qkSharedStates) if(state->device.Get()==device.Get()) last=false;
+    if(last && context) { context->ClearState(); context->Flush(); }
+    LeaveShared();
+}
+
+void QkD3D11State::TrimIfIdle()
+{
+    struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
+    if(qkPresentSerial==qkTrimmedSerial) return;
+    bool visible=false;
+    EnumWindows([](HWND hwnd,LPARAM arg)->BOOL {
+        DWORD pid=0; GetWindowThreadProcessId(hwnd,&pid);
+        if(pid==GetCurrentProcessId() && IsWindowVisible(hwnd)) { *reinterpret_cast<bool*>(arg)=true; return FALSE; }
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&visible));
+    if(visible) return;
+    // 仅进程全部顶层窗口隐藏后的空闲边界回收驱动内部重命名/暂存存储。
+    // Trim 保留应用持有的资源内容；不清空 WPF 缓存，不触发 GC，不等待或跳过动画帧。
+    std::set<ID3D11Device*> trimmed;
+    for(auto state:qkSharedStates) if(trimmed.insert(state->device.Get()).second) {
+        ComPtr<IDXGIDevice3> dxgi;
+        if(SUCCEEDED(state->device.As(&dxgi))) {
+            PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
+            if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
+            state->context->Flush(); dxgi->Trim();
+            if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
+            char line[320]; StringCchPrintfA(line,320,"{\"event\":\"idle-trim\",\"device\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu}\n",state->device.Get(),static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage)); QkAccountEvent(line); QkAccountBudget(state->device.Get());
+        }
+    }
+    qkTrimmedSerial=qkPresentSerial;
+}
+
 HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
 {
+    struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     *out = nullptr;
     ComPtr<IDXGIFactory1> factory;
     HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
@@ -63,11 +179,33 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     if (!selected) return WGXERR_NO_HARDWARE_DEVICE;
     QkD3D11State *state = new QkD3D11State;
     if (!state) return E_OUTOFMEMORY;
+    hr=selected->GetDesc(&state->adapter);
+    if(FAILED(hr)) { state->Release(); return hr; }
+    for(auto existing:qkSharedStates) {
+        if(memcmp(&existing->adapter.AdapterLuid,&state->adapter.AdapterLuid,sizeof(LUID))==0 && SUCCEEDED(existing->device->GetDeviceRemovedReason())) {
+            state->device=existing->device; state->context=existing->context; state->featureLevel=existing->featureLevel; break;
+        }
+    }
+    if(!state->device) {
     const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
+    PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
+    if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
     hr = D3D11CreateDevice(selected.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
         &state->device, &state->featureLevel, &state->context);
+    if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
+    char account[400]; StringCchPrintfA(account,400,"{\"event\":\"device-create\",\"device\":\"%p\",\"monitor\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu,\"hr\":%ld}\n",state->device.Get(),monitor,static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage),hr); QkAccountEvent(account);
     if (SUCCEEDED(hr)) hr = selected->GetDesc(&state->adapter);
+    } else {
+        char line[240]; StringCchPrintfA(line,240,"{\"event\":\"device-share\",\"device\":\"%p\",\"monitor\":\"%p\"}\n",state->device.Get(),monitor); QkAccountEvent(line);
+    }
+    if(SUCCEEDED(hr)) hr=state->context.As(&state->context1);
+    ComPtr<ID3D11Device1> device1;
+    if(SUCCEEDED(hr)) hr=state->device.As(&device1);
+    if(SUCCEEDED(hr)) {
+        D3D_FEATURE_LEVEL selectedLevel;
+        hr=device1->CreateDeviceContextState(0,&state->featureLevel,1,D3D11_SDK_VERSION,__uuidof(ID3D11Device),&selectedLevel,&state->savedContext);
+    }
     UINT support = 0;
     if (SUCCEEDED(hr)) hr = state->device->CheckFormatSupport(DXGI_FORMAT_B8G8R8A8_UNORM, &support);
     const UINT required = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
@@ -76,6 +214,7 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     static volatile LONG64 nextGeneration = 0;
     state->generation = InterlockedIncrement64(&nextGeneration);
     state->m_monitor=monitor;
+    qkSharedStates.push_back(state);
     *out = state;
     return S_OK;
 }
@@ -109,6 +248,7 @@ void QkD3D11State::ReadCaps(D3DCAPS9 *caps, UINT *memory) const
 
 HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *luid)
 {
+    struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     struct Caps { D3DCAPS9 caps; UINT memory; LUID luid; };
     static SRWLOCK lock=SRWLOCK_INIT;
     static std::map<ULONGLONG,Caps> cached;
@@ -149,18 +289,23 @@ HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *l
 
 HRESULT QkD3D11State::Initialize()
 {
+    struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
+    Activate();
     HRESULT hr=S_OK;
     D3D11_BUFFER_DESC cb = {};
     cb.ByteWidth = 16; cb.Usage = D3D11_USAGE_DYNAMIC; cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     hr = device->CreateBuffer(&cb, nullptr, &m_constants);
     if (FAILED(hr)) return hr;
+    QkAccount(m_constants.Get(),"constant-buffer",16);
     cb.ByteWidth=sizeof(m_vsData); hr=device->CreateBuffer(&cb,nullptr,&m_vsConstants); if(FAILED(hr)) return hr;
     cb.ByteWidth=sizeof(m_psData); hr=device->CreateBuffer(&cb,nullptr,&m_psConstants); if(FAILED(hr)) return hr;
+    QkAccount(m_vsConstants.Get(),"constant-buffer",sizeof(m_vsData)); QkAccount(m_psConstants.Get(),"constant-buffer",sizeof(m_psData));
     for (UINT i = 0; i < 2; ++i)
     {
         D3D11_RASTERIZER_DESC rd = {};
         rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE; rd.ScissorEnable = i != 0;
         hr = device->CreateRasterizerState(&rd, &m_raster[i]);
+        if(SUCCEEDED(hr)) QkAccount(m_raster[i].Get(),"raster-state");
         if (FAILED(hr)) return hr;
     }
     char identity[256];
@@ -193,6 +338,7 @@ HRESULT QkD3D11State::CreateBuffer(UINT bytes, UINT bind, QkFacadeBuffer **out)
     desc.ByteWidth = bytes; desc.Usage = D3D11_USAGE_DYNAMIC; desc.BindFlags = bind; desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     HRESULT hr = device->CreateBuffer(&desc, nullptr, &b->buffer);
     if (FAILED(hr)) { b->Release(); return hr; }
+    QkAccount(b->buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"dynamic-VB":"dynamic-IB",bytes);
     b->context = context; b->size = bytes; b->generation = generation; *out = b; return S_OK;
 }
 HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h)
@@ -204,10 +350,14 @@ HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h)
 }
 HRESULT QkD3D11State::RecordPresent()
 {
+    ++qkPresentSerial;
+    QkAccountBudget(device.Get());
+    QkAccountEvent("{\"event\":\"present\"}\n");
     D3D11_QUERY_DESC desc = { D3D11_QUERY_EVENT, 0 };
-    ComPtr<ID3D11Query> query;
-    HRESULT hr = device->CreateQuery(&desc, &query);
-    if (FAILED(hr)) return hr;
+    // 即使调用方没有查询排队数，也要回收已完成的 fence，不能随呈现次数积累。
+    UINT queued; HRESULT hr=GetNumQueuedPresents(&queued); if(FAILED(hr)) return hr;
+    ComPtr<ID3D11Query> query; query.Swap(m_sparePresentQuery);
+    if(!query) { hr=device->CreateQuery(&desc,&query); if(FAILED(hr)) return hr; QkAccount(query.Get(),"present-query"); }
     context->End(query.Get()); context->Flush();
     m_presentQueries.push_back(query); return S_OK;
 }
@@ -220,6 +370,7 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
         HRESULT hr = context->GetData(m_presentQueries.front().Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
         if (FAILED(hr)) return hr;
         if (hr == S_FALSE || !done) break;
+        if(!m_sparePresentQuery) m_sparePresentQuery=m_presentQueries.front();
         m_presentQueries.erase(m_presentQueries.begin());
     }
     *count = static_cast<UINT>(m_presentQueries.size());
@@ -264,11 +415,11 @@ HRESULT QkD3D11State::SetTransform(D3DTRANSFORMSTATETYPE type, const void *matri
 }
 HRESULT QkD3D11State::SetVertexShaderConstantF(UINT start, const float *data, UINT count) {
     if(!data || start>256 || count>256-start) return E_INVALIDARG;
-    memcpy(m_vsData+start,data,count*16); return S_OK;
+    if(memcmp(m_vsData+start,data,count*16)) { memcpy(m_vsData+start,data,count*16); m_vsDirty=true; } return S_OK;
 }
 HRESULT QkD3D11State::SetPixelShaderConstantF(UINT start, const float *data, UINT count) {
     if(!data || start>224 || count>224-start) return E_INVALIDARG;
-    memcpy(m_psData+start,data,count*16); return S_OK;
+    if(memcmp(m_psData+start,data,count*16)) { memcpy(m_psData+start,data,count*16); m_psDirty=true; } return S_OK;
 }
 HRESULT QkD3D11State::SetPixelShaderConstantI(UINT, const int *, UINT) { return QkFacadeUnimpl("SetPixelShaderConstantI"); }
 HRESULT QkD3D11State::SetPixelShaderConstantB(UINT, const BOOL *, UINT) { return QkFacadeUnimpl("SetPixelShaderConstantB"); }
@@ -326,12 +477,17 @@ HRESULT QkD3D11State::Apply()
         if (!b.SrcBlend || !b.DestBlend) return QkFacadeUnimpl("Blend.factor");
         b.BlendOp = b.BlendOpAlpha = D3D11_BLEND_OP_ADD; b.RenderTargetWriteMask = static_cast<UINT8>(m_states[D3DRS_COLORWRITEENABLE]);
         ComPtr<ID3D11BlendState> state;
-        HRESULT hr = device->CreateBlendState(&bd, &state); if (FAILED(hr)) return hr;
+        HRESULT hr = device->CreateBlendState(&bd, &state); if(SUCCEEDED(hr)) QkAccount(state.Get(),"blend-state"); if (FAILED(hr)) return hr;
         found = m_blends.insert(std::make_pair(key, state)).first;
     }
     D3D11_MAPPED_SUBRESOURCE map;
-    HRESULT hr = context->Map(m_constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map); if (FAILED(hr)) return hr;
-    float size[4] = {static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y)}; memcpy(map.pData, size, sizeof(size)); context->Unmap(m_constants.Get(), 0);
+    HRESULT hr=S_OK;
+    float size[4] = {static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y)};
+    if(!m_sizeValid || memcmp(size,m_sizeData,sizeof(size))) {
+        hr=context->Map(m_constants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map); if(FAILED(hr)) return hr;
+        memcpy(map.pData,size,sizeof(size)); context->Unmap(m_constants.Get(),0);
+        memcpy(m_sizeData,size,sizeof(size)); m_sizeValid=true;
+    }
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     DWORD blend=m_states[D3DRS_BLENDFACTOR];
     float factor[]={((blend>>16)&255)/255.f,((blend>>8)&255)/255.f,(blend&255)/255.f,(blend>>24)/255.f};
@@ -366,8 +522,10 @@ HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT 
 {
     if (bytes > capacity)
     {
-        D3D11_BUFFER_DESC bd = {}; bd.ByteWidth = max(bytes, 1024U*1024U); bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        buffer.Reset(); HRESULT hr = device->CreateBuffer(&bd, nullptr, &buffer); if (FAILED(hr)) return hr; capacity = bd.ByteWidth;
+        D3D11_BUFFER_DESC bd = {}; // UP 通常只传几个顶点；WRITE_DISCARD 的重命名以整个容量计费。
+        // 按实际上传量增长，避免为每次小绘制重命名至少 1 MiB。
+        bd.ByteWidth = max(bytes, 256U); bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        buffer.Reset(); HRESULT hr = device->CreateBuffer(&bd, nullptr, &buffer); if (FAILED(hr)) return hr; capacity = bd.ByteWidth; QkAccount(buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"upload-VB":"upload-IB",bd.ByteWidth);
     }
     D3D11_MAPPED_SUBRESOURCE map; HRESULT hr = context->Map(buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
     if (FAILED(hr)) return hr; memcpy(map.pData, data, bytes); context->Unmap(buffer.Get(), 0); return S_OK;

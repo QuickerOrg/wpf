@@ -523,7 +523,7 @@ Cleanup:
 
 #if QUICKER_WPF_D3D11_FACADE
 HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,
-    UINT width,UINT height,D3DFORMAT format,CD3DSurface **out)
+    UINT width,UINT height,D3DFORMAT format,CD3DSurface **out,ID3D11Texture2D *backBuffer)
 {
     *out=nullptr;
     if(format!=D3DFMT_A8R8G8B8 && format!=D3DFMT_X8R8G8B8) return QkFacadeUnimpl("CreateFacadeSurface.format");
@@ -536,7 +536,10 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     D3D11_TEXTURE2D_DESC td={}; td.Width=width; td.Height=height; td.MipLevels=1; td.ArraySize=1;
     td.Format=DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count=1; td.Usage=D3D11_USAGE_DEFAULT;
     td.BindFlags=D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE; td.MiscFlags=D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
-    HRESULT hr=state->device->CreateTexture2D(&td,nullptr,&s->m_facadeTexture);
+    HRESULT hr=S_OK;
+    if(backBuffer) s->m_facadeTexture=backBuffer;
+    else hr=state->device->CreateTexture2D(&td,nullptr,&s->m_facadeTexture);
+    if(SUCCEEDED(hr)) QkAccount(s->m_facadeTexture.Get(),backBuffer?"DXGI-backbuffer":"GDI-compatible",static_cast<ULONGLONG>(width)*height*4);
     if(SUCCEEDED(hr)) hr=state->device->CreateRenderTargetView(s->m_facadeTexture.Get(),nullptr,&s->m_facadeRTV);
     if(SUCCEEDED(hr)) hr=s->m_facadeTexture.As(&s->m_facadeGDI);
     if(FAILED(hr)){s->Release();return hr;}

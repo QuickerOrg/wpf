@@ -1,7 +1,7 @@
 #pragma once
 
 #if QUICKER_WPF_D3D11_FACADE
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi.h>
 #include <wrl/client.h>
 #include <map>
@@ -12,6 +12,9 @@
 // WPF 内部执行对象；不实现任何 D3D9 COM 接口。
 HRESULT QkFacadeUnimpl(const char *name);
 void QkFacadeTrace(const char *line);
+// 默认关闭；私有数据令牌跟随实际 D3D 对象销毁，统计逻辑字节而非驱动物理分配。
+void QkAccount(ID3D11DeviceChild *object, const char *kind, ULONGLONG bytes = 0);
+void QkAccountEvent(const char *event);
 using Microsoft::WRL::ComPtr;
 
 class QkFacadeBuffer
@@ -119,12 +122,15 @@ class QkD3D11State
     D3DMATERIAL9 m_material = {};
     std::map<D3DTRANSFORMSTATETYPE, CBaseMatrix> m_transforms;
     std::vector<ComPtr<ID3D11Query>> m_presentQueries;
+    ComPtr<ID3D11Query> m_sparePresentQuery;
     D3DVIEWPORT9 m_viewport = {};
     RECT m_scissor = {};
     std::map<unsigned long long, ComPtr<ID3D11BlendState>> m_blends;
     ComPtr<ID3D11RasterizerState> m_raster[2];
     ComPtr<ID3D11Buffer> m_vsConstants, m_psConstants;
     float m_vsData[256][4] = {}, m_psData[224][4] = {};
+    bool m_vsDirty = true, m_psDirty = true, m_sizeValid = false;
+    float m_sizeData[4] = {};
     ComPtr<QkFacadeShader> m_boundVS, m_boundPS;
     ComPtr<QkTextureHandle> m_textures[8];
     std::map<std::string,ComPtr<QkFacadeShader>> m_shaderCache;
@@ -144,6 +150,16 @@ public:
     UINT width = 0, height = 0;
     static HRESULT Create(HMONITOR monitor, QkD3D11State **out);
     HRESULT Initialize();
+    ~QkD3D11State();
+    // 全部共享设备入口串行；各显示器保留独立上下文状态和原 WPF 包装语义。
+    static void EnterShared();
+    static void LeaveShared();
+    void Activate();
+    static void EnterState(QkD3D11State *state);
+    static void LeaveState();
+    static void TrimIfIdle();
+    ComPtr<ID3DDeviceContextState> savedContext;
+    ComPtr<ID3D11DeviceContext1> context1;
     HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out);
     HRESULT Compile(const char *source, UINT bytes, bool vertex, QkFacadeShader **out);
     HRESULT Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter);

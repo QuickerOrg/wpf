@@ -324,6 +324,7 @@ CD3DDeviceLevel1::Init(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
+    struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     m_resourceManager.Init(this);
     HRESULT hr = QkD3D11State::Create(pDisplay->GetHMONITOR(), &m_facade);
     if (FAILED(hr)) return hr;
@@ -931,6 +932,10 @@ void
 CD3DDeviceLevel1::Enter(
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkD3D11State::EnterShared();
+    QkD3D11State::EnterState(m_facade);
+#endif
     if (IsEnsuringCorrectMultithreadedRendering())
     {
         m_csDeviceEntry.Enter();
@@ -975,6 +980,10 @@ CD3DDeviceLevel1::Leave(
     {
         m_csDeviceEntry.Leave();
     }
+#if QUICKER_WPF_D3D11_FACADE
+    QkD3D11State::LeaveState();
+    QkD3D11State::LeaveShared();
+#endif
 }
 
 //+-----------------------------------------------------------------------------
@@ -2055,14 +2064,10 @@ CD3DDeviceLevel1::CreateAdditionalSwapChain(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    if (!pMILDC || !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) {
-        HWND hwnd=pMILDC?pMILDC->GetHWND():nullptr;
-        WCHAR name[128]={};if(hwnd)GetClassNameW(hwnd,name,128);
-        char line[256];StringCchPrintfA(line,256,"QK-FACADE unsupported opaque hwnd=%p class=%ls size=%ux%u\n",hwnd,name,
-            pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight);QkFacadeTrace(line);
-        return QkFacadeUnimpl("CreateAdditionalSwapChain.opaque");
-    }
-    return CD3DSwapChain::CreateFacade(&m_resourceManager,m_facade,pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight,ppSwapChain);
+    if(!pMILDC) return QkFacadeUnimpl("CreateAdditionalSwapChain.noContext");
+    HWND hwnd=pMILDC->GetHWND();
+    bool opaque=(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_LAYERED)==0;
+    return CD3DSwapChain::CreateFacade(&m_resourceManager,m_facade,pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight,ppSwapChain,opaque?hwnd:nullptr);
 #else
 
     AssertDeviceEntry(*this);
@@ -3358,7 +3363,12 @@ CD3DDeviceLevel1::Present(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    if(!(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return QkFacadeUnimpl("Present.opaque");
+    if(pD3DSwapChain->m_facadeSwapChain) {
+        HRESULT hr=pD3DSwapChain->m_facadeSwapChain->Present(0,0);
+        if(FAILED(hr)) return FAILED(m_facade->DeviceStatus())?WGXERR_DISPLAYSTATEINVALID:hr;
+        QkFacadeTrace("QK-FACADE Present DXGI opaque\n");
+        return m_facade->RecordPresent();
+    }
     bool processed=false; return PresentWithGDI(pD3DSwapChain,prcSource,prcDest,pMILDC,pDirtyRegion,&processed);
 #else
 

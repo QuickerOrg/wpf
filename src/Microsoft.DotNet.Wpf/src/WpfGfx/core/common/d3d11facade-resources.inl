@@ -35,6 +35,8 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         if(desc->Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_AUTOGENMIPMAP)) td.BindFlags|=D3D11_BIND_RENDER_TARGET;
         if(desc->Usage&D3DUSAGE_AUTOGENMIPMAP) td.MiscFlags=D3D11_RESOURCE_MISC_GENERATE_MIPS;
         HRESULT hr=device->CreateTexture2D(&td,nullptr,&t->texture); if(FAILED(hr)) return hr;
+        ULONGLONG bytes=0; for(UINT n=0;n<levels;++n) bytes+=static_cast<ULONGLONG>(max(1U,td.Width>>n))*max(1U,td.Height>>n)*QkPixelSize(desc->Format);
+        QkAccount(t->texture.Get(),(desc->Usage&D3DUSAGE_RENDERTARGET)?"RT-offscreen":(desc->Format==D3DFMT_A8 || desc->Format==D3DFMT_L8)?"glyph-atlas":"sample-texture",bytes);
         hr=device->CreateShaderResourceView(t->texture.Get(),nullptr,&t->srv); if(FAILED(hr)) return hr;
     }
     for(UINT n=0;n<levels;++n) {
@@ -73,6 +75,7 @@ HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD fla
             td.Usage=D3D11_USAGE_STAGING; td.BindFlags=td.MiscFlags=0; td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
             ComPtr<ID3D11Device> device; texture->GetDevice(&device);
             HRESULT hr=device->CreateTexture2D(&td,nullptr,&staging); if(FAILED(hr)) return hr;
+            QkAccount(staging.Get(),"staging",static_cast<ULONGLONG>(td.Width)*td.Height*QkPixelSize(desc.Format));
         }
         context->CopyResource(staging.Get(),texture.Get());
         D3D11_MAPPED_SUBRESOURCE map; HRESULT hr=context->Map(staging.Get(),mip,D3D11_MAP_READ,0,&map); if(FAILED(hr)) return hr;
@@ -189,6 +192,7 @@ HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacade
     if(FAILED(hr)) { if(errors) QkFacadeTrace(static_cast<const char*>(errors->GetBufferPointer())); return hr; }
     if(vertex) hr=device->CreateVertexShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->vs);
     else hr=device->CreatePixelShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->ps);
+    if(SUCCEEDED(hr)) QkAccount(vertex?static_cast<ID3D11DeviceChild*>(shader->vs.Get()):static_cast<ID3D11DeviceChild*>(shader->ps.Get()),vertex?"vertex-shader":"pixel-shader");
     if(FAILED(hr)) return hr;
     if(!vertex) {
         ComPtr<ID3D11ShaderReflection> reflection;
@@ -241,6 +245,7 @@ HRESULT QkD3D11State::InputLayout(QkFacadeShader *shader,ID3D11InputLayout **out
             }
             return hr;
         }
+        QkAccount(layout.Get(),"input-layout");
         found=shader->layouts.insert(std::make_pair(m_fvf,layout)).first;
     }
     *out=found->second.Get(); return S_OK;
@@ -314,9 +319,11 @@ HRESULT QkD3D11State::ApplyShaders()
     ID3D11InputLayout *layout=nullptr; HRESULT hr=InputLayout(vs.Get(),&layout); if(FAILED(hr)) return hr;
     context->IASetInputLayout(layout); context->VSSetShader(vs->vs.Get(),nullptr,0); context->PSSetShader(ps->ps.Get(),nullptr,0);
     for(UINT n=0;n<2;++n) {
+        // 绑定仍逐 Draw 恢复；只有字节变化才重命名常量存储。
+        bool &dirty=n?m_psDirty:m_vsDirty; if(!dirty) continue;
         auto buffer=n?m_psConstants:m_vsConstants;
         D3D11_MAPPED_SUBRESOURCE map; hr=context->Map(buffer.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map); if(FAILED(hr)) return hr;
-        memcpy(map.pData,n?m_psData:m_vsData,n?sizeof(m_psData):sizeof(m_vsData)); context->Unmap(buffer.Get(),0);
+        memcpy(map.pData,n?m_psData:m_vsData,n?sizeof(m_psData):sizeof(m_vsData)); context->Unmap(buffer.Get(),0); dirty=false;
     }
     context->VSSetConstantBuffers(0,1,m_constants.GetAddressOf()); context->VSSetConstantBuffers(1,1,m_vsConstants.GetAddressOf());
     context->PSSetConstantBuffers(2,1,m_psConstants.GetAddressOf());
@@ -347,7 +354,7 @@ HRESULT QkD3D11State::ApplyShaders()
         DWORD c=st[D3DSAMP_BORDERCOLOR]; sd.BorderColor[0]=((c>>16)&255)/255.f; sd.BorderColor[1]=((c>>8)&255)/255.f; sd.BorderColor[2]=(c&255)/255.f; sd.BorderColor[3]=(c>>24)/255.f;
         memcpy(&sd.MipLODBias,&st[D3DSAMP_MIPMAPLODBIAS],sizeof(float));
         std::string key(reinterpret_cast<char*>(&sd),sizeof(sd)); auto f=m_samplerCache.find(key);
-        if(f==m_samplerCache.end()) { ComPtr<ID3D11SamplerState> sampler; hr=device->CreateSamplerState(&sd,&sampler); if(FAILED(hr)) return hr; f=m_samplerCache.insert(std::make_pair(key,sampler)).first; }
+        if(f==m_samplerCache.end()) { ComPtr<ID3D11SamplerState> sampler; hr=device->CreateSamplerState(&sd,&sampler); if(FAILED(hr)) return hr; QkAccount(sampler.Get(),"sampler-state"); f=m_samplerCache.insert(std::make_pair(key,sampler)).first; }
         context->PSSetSamplers(n,1,f->second.GetAddressOf());
     }
     return S_OK;

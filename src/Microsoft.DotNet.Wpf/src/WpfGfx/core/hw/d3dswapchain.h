@@ -50,7 +50,8 @@ protected:
 public:
 #if QUICKER_WPF_D3D11_FACADE
     static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
-        UINT width, UINT height, CD3DSwapChain **out);
+        UINT width, UINT height, CD3DSwapChain **out, HWND opaqueHwnd=nullptr);
+    ComPtr<IDXGISwapChain> m_facadeSwapChain;
 #endif
 
     static HRESULT Create(

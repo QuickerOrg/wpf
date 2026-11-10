@@ -27,7 +27,7 @@ public:
     ComPtr<IDXGISurface1> m_facadeGDI;
     ULONGLONG m_facadeGeneration = 0;
     static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
-        UINT width, UINT height, D3DFORMAT format, CD3DSurface **out);
+        UINT width, UINT height, D3DFORMAT format, CD3DSurface **out, ID3D11Texture2D *backBuffer=nullptr);
     HRESULT ReleaseFacadeDC();
 #endif
     static HRESULT Create(
