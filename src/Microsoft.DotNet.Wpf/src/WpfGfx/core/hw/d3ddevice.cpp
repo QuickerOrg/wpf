@@ -2067,7 +2067,9 @@ CD3DDeviceLevel1::CreateAdditionalSwapChain(
     if(!pMILDC) return QkFacadeUnimpl("CreateAdditionalSwapChain.noContext");
     HWND hwnd=pMILDC->GetHWND();
     bool opaque=(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_LAYERED)==0;
-    return CD3DSwapChain::CreateFacade(&m_resourceManager,m_facade,pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight,ppSwapChain,opaque?hwnd:nullptr);
+    HRESULT hr=CD3DSwapChain::CreateFacade(&m_resourceManager,m_facade,pD3DPresentParams->BackBufferWidth,pD3DPresentParams->BackBufferHeight,ppSwapChain,opaque?hwnd:nullptr);
+    if(SUCCEEDED(hr)) (*ppSwapChain)->m_facadeSyncInterval=pD3DPresentParams->PresentationInterval==D3DPRESENT_INTERVAL_IMMEDIATE?0:1;
+    return hr;
 #else
 
     AssertDeviceEntry(*this);
@@ -3364,11 +3366,66 @@ CD3DDeviceLevel1::Present(
 {
 #if QUICKER_WPF_D3D11_FACADE
     if(pD3DSwapChain->m_facadeSwapChain) {
-        HRESULT hr=pD3DSwapChain->m_facadeSwapChain->Present(0,0);
-        if(FAILED(hr)) return FAILED(m_facade->DeviceStatus())?WGXERR_DISPLAYSTATEINVALID:hr;
-        QkFacadeTrace("QK-FACADE Present DXGI opaque\n");
+        HWND hwnd=pMILDC->GetHWND();
+        if(!IsWindow(hwnd)) return HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE);
+        if(IsIconic(hwnd) || !IsWindowVisible(hwnd)) return S_PRESENT_OCCLUDED;
+        if(GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_LAYERED) return WGXERR_NEED_RECREATE_AND_PRESENT;
+        CD3DSurface *surface=pD3DSwapChain->m_rgBackBuffers[0];
+        const LONG w=surface->Desc().Width,h=surface->Desc().Height;
+        RECT src={0,0,w,h},dst=src;
+        if(prcSource) src=*reinterpret_cast<const RECT *>(prcSource);
+        if(prcDest) dst=*reinterpret_cast<const RECT *>(prcDest);
+        if(src.right-src.left!=dst.right-dst.left || src.bottom-src.top!=dst.bottom-dst.top)
+            return QkFacadeUnimpl("Present.scaledSourceDestination");
+        if(src.left<0 || src.top<0 || src.right>w || src.bottom>h || dst.left<0 || dst.top<0 || dst.right>w || dst.bottom>h)
+            return QkFacadeUnimpl("Present.sourceDestinationBounds");
+        if(IsRectEmpty(&src) || IsRectEmpty(&dst)) return S_OK;
+        ComPtr<ID3D11Texture2D> buffer;
+        HRESULT hr=pD3DSwapChain->m_facadeSwapChain->GetBuffer(0,IID_PPV_ARGS(&buffer));
+        if(FAILED(hr)) return hr;
+        // 保留表面是 WPF 的唯一绘图目标；flip 不会丢失尚未再次重画的区域。
+        std::vector<RECT> dirty;
+        if(!pD3DSwapChain->m_facadeFirstPresent && pDirtyRegion && pDirtyRegion->rdh.nCount) {
+            const RECT *rects=reinterpret_cast<const RECT *>(pDirtyRegion->Buffer);
+            for(DWORD i=0;i<pDirtyRegion->rdh.nCount;++i) {
+                RECT clipped; if(IntersectRect(&clipped,&rects[i],&src)) {
+                    RECT target=clipped; OffsetRect(&target,dst.left-src.left,dst.top-src.top);
+                    D3D11_BOX box={static_cast<UINT>(clipped.left),static_cast<UINT>(clipped.top),0,static_cast<UINT>(clipped.right),static_cast<UINT>(clipped.bottom),1};
+                    m_facade->context->CopySubresourceRegion(buffer.Get(),0,target.left,target.top,0,surface->m_facadeTexture.Get(),0,&box);
+                    dirty.push_back(target);
+                }
+            }
+            if(dirty.empty()) return S_OK;
+        } else if(!pD3DSwapChain->m_facadeFirstPresent && prcSource) {
+            D3D11_BOX box={static_cast<UINT>(src.left),static_cast<UINT>(src.top),0,static_cast<UINT>(src.right),static_cast<UINT>(src.bottom),1};
+            m_facade->context->CopySubresourceRegion(buffer.Get(),0,dst.left,dst.top,0,surface->m_facadeTexture.Get(),0,&box);
+            dirty.push_back(dst);
+        } else {
+            // 首帧/resize 后全量初始化，包括 source rect 外的保留区域。
+            m_facade->context->CopyResource(buffer.Get(),surface->m_facadeTexture.Get());
+            if(src.left!=dst.left || src.top!=dst.top) {
+                D3D11_BOX box={static_cast<UINT>(src.left),static_cast<UINT>(src.top),0,static_cast<UINT>(src.right),static_cast<UINT>(src.bottom),1};
+                m_facade->context->CopySubresourceRegion(buffer.Get(),0,dst.left,dst.top,0,surface->m_facadeTexture.Get(),0,&box);
+            }
+        }
+        DXGI_PRESENT_PARAMETERS params={}; params.DirtyRectsCount=static_cast<UINT>(dirty.size()); params.pDirtyRects=dirty.empty()?nullptr:dirty.data();
+        hr=pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
+            (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params);
+        if(hr==DXGI_STATUS_OCCLUDED) {
+            // 原 WDDM 普通窗口策略：短暂退让、通知 UI 重验窗口，保持后续渲染可恢复。
+            Sleep(100); PostMessage(hwnd,m_presentFailureWindowMessage,0,0); return S_OK;
+        }
+        if(hr==DXGI_STATUS_MODE_CHANGED || hr==DXGI_STATUS_MODE_CHANGE_IN_PROGRESS ||
+            hr==DXGI_ERROR_DEVICE_REMOVED || hr==DXGI_ERROR_DEVICE_RESET ||
+            hr==DXGI_ERROR_DEVICE_HUNG || hr==DXGI_ERROR_DRIVER_INTERNAL_ERROR) return WGXERR_DISPLAYSTATEINVALID;
+        if(hr==DXGI_ERROR_INVALID_CALL) return WGXERR_NEED_RECREATE_AND_PRESENT;
+        if(hr==DXGI_ERROR_WAS_STILL_DRAWING) return D3DERR_WASSTILLDRAWING;
+        if(FAILED(hr)) return hr;
+        pD3DSwapChain->m_facadeFirstPresent=false;
+        QkFacadeTrace(dirty.empty()?"QK-FACADE Present DXGI flip full\n":"QK-FACADE Present DXGI flip dirty\n");
         return m_facade->RecordPresent();
     }
+    if(!(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) return WGXERR_NEED_RECREATE_AND_PRESENT;
     bool processed=false; return PresentWithGDI(pD3DSwapChain,prcSource,prcDest,pMILDC,pDirtyRegion,&processed);
 #else
 
@@ -3776,10 +3833,10 @@ CD3DDeviceLevel1::PresentWithGDI(
     if(SUCCEEDED(hr)) {
         SIZE size={static_cast<LONG>(surface->Desc().Width),static_cast<LONG>(surface->Desc().Height)};
         POINT src={0,0}; BLENDFUNCTION blend=pMILDC->GetBlendFunction();
-        blend.BlendOp=AC_SRC_OVER; blend.BlendFlags=0; blend.AlphaFormat=AC_SRC_ALPHA;
+        // 使用 CMILDeviceContext 已计算的 constant/per-pixel alpha 和色键组合。
         UPDATELAYEREDWINDOWINFO info={}; info.cbSize=sizeof(info);
         info.pptDst=&pMILDC->GetPosition(); info.psize=&size; info.hdcSrc=dc; info.pptSrc=&src;
-        info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=ULW_ALPHA;
+        info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=pMILDC->GetULWFlags();
         hr=UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError());
         HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr))hr=release;
         *pfPresentProcessed=SUCCEEDED(hr);
@@ -6475,7 +6532,17 @@ HRESULT
 CD3DDeviceLevel1::WaitForVBlank(UINT uSwapChainIndex)
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::WaitForVBlank");
+    UNREFERENCED_PARAMETER(uSwapChainIndex);
+    if(m_fHWVBlankTested && !m_fHWVBlank) return WGXERR_NO_HARDWARE_DEVICE;
+    LARGE_INTEGER start={},end={},frequency={};
+    QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&start);
+    HRESULT hr=m_facade->WaitForVBlank();
+    if(!m_fHWVBlankTested) {
+        QueryPerformanceCounter(&end); m_fHWVBlankTested=true;
+        m_fHWVBlank=SUCCEEDED(hr) && frequency.QuadPart>0 &&
+            (end.QuadPart-start.QuadPart)*1000/frequency.QuadPart<75;
+    }
+    return SUCCEEDED(hr) && m_fHWVBlank?S_OK:WGXERR_NO_HARDWARE_DEVICE;
 #else
 
     BEGIN_MILINSTRUMENTATION_HRESULT_LIST_WITH_DEFAULTS

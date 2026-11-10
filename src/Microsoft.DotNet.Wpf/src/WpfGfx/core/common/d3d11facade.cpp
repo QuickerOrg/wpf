@@ -373,8 +373,29 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
         if(!m_sparePresentQuery) m_sparePresentQuery=m_presentQueries.front();
         m_presentQueries.erase(m_presentQueries.begin());
     }
-    *count = static_cast<UINT>(m_presentQueries.size());
+    // 与原 WPF GPU marker 同一含义：尚未完成的真实 GPU 命令队列，非 DWM 扫描输出队列。
+    // PresentCount 可能跳帧，不能用 submitted-displayed 的差伪造排队数。
+    *count=static_cast<UINT>(m_presentQueries.size());
     return DeviceStatus();
+}
+HRESULT QkD3D11State::WaitForVBlank()
+{
+    ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
+    HRESULT hr=device.As(&dxgi);
+    if(SUCCEEDED(hr)) hr=dxgi->GetAdapter(&adapter);
+    if(FAILED(hr)) return WGXERR_NO_HARDWARE_DEVICE;
+    for(UINT i=0;;++i) {
+        ComPtr<IDXGIOutput> output; hr=adapter->EnumOutputs(i,&output);
+        if(hr==DXGI_ERROR_NOT_FOUND) break;
+        if(FAILED(hr)) return WGXERR_NO_HARDWARE_DEVICE;
+        DXGI_OUTPUT_DESC desc={};
+        if(SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor==m_monitor) {
+            hr=output->WaitForVBlank();
+            return SUCCEEDED(hr)?S_OK:WGXERR_NO_HARDWARE_DEVICE;
+        }
+    }
+    // RDP/无物理输出沿用原 WPF 的无硬件 vblank 结果，让原调度器处理。
+    return WGXERR_NO_HARDWARE_DEVICE;
 }
 HRESULT QkD3D11State::SetRenderState(D3DRENDERSTATETYPE type, DWORD value)
 {

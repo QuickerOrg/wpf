@@ -3,6 +3,7 @@
 #if QUICKER_WPF_D3D11_FACADE
 #include <d3d11_1.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <map>
 #include <vector>
@@ -142,6 +143,7 @@ class QkD3D11State
     HRESULT Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes);
 public:
     ComPtr<ID3D11Device> device;
+    HRESULT WaitForVBlank();
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11RenderTargetView> target;
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_10_0;

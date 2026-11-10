@@ -402,25 +402,35 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
     *out=nullptr; CD3DSwapChain *s=new(1) CD3DSwapChain(nullptr,1,nullptr); if(!s) return E_OUTOFMEMORY;
     s->AddRef(); s->CD3DResource::Init(manager,0);
     HRESULT hr=S_OK;
-    ComPtr<ID3D11Texture2D> backBuffer;
+    s->m_facadeState=state;
     if(opaqueHwnd) {
-        ComPtr<IDXGIDevice> device; ComPtr<IDXGIAdapter> adapter; ComPtr<IDXGIFactory> factory;
+        ComPtr<IDXGIDevice> device; ComPtr<IDXGIAdapter> adapter; ComPtr<IDXGIFactory2> factory;
         hr=state->device.As(&device);
         if(SUCCEEDED(hr)) hr=device->GetAdapter(&adapter);
         if(SUCCEEDED(hr)) hr=adapter->GetParent(IID_PPV_ARGS(&factory));
-        DXGI_SWAP_CHAIN_DESC desc={}; desc.BufferDesc.Width=width; desc.BufferDesc.Height=height;
-        desc.BufferDesc.Format=DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count=1;
-        desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT|DXGI_USAGE_SHADER_INPUT;
-        desc.BufferCount=1; desc.OutputWindow=opaqueHwnd; desc.Windowed=TRUE;
-        // 最小普通窗口路径：单缓冲顺序呈现保留内容。flip/dirty present 留待 S3。
-        desc.SwapEffect=DXGI_SWAP_EFFECT_SEQUENTIAL;
-        if(SUCCEEDED(hr)) hr=factory->CreateSwapChain(state->device.Get(),&desc,&s->m_facadeSwapChain);
+        DXGI_SWAP_CHAIN_DESC1 desc={}; desc.Width=width; desc.Height=height;
+        desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count=1;
+        desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount=2; desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        desc.Scaling=DXGI_SCALING_STRETCH; desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
+        // WPF 保留目标独立于轮换的 DXGI 后缓冲，局部更新只做 GPU 拷贝。
+        if(SUCCEEDED(hr)) hr=factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain);
         if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
-        if(SUCCEEDED(hr)) hr=s->m_facadeSwapChain->GetBuffer(0,IID_PPV_ARGS(&backBuffer));
-        char line[240]; StringCchPrintfA(line,240,"QK-FACADE DXGI opaque hwnd=%p size=%ux%u hr=0x%08x\n",opaqueHwnd,width,height,hr); QkFacadeTrace(line);
+        char line[240]; StringCchPrintfA(line,240,"QK-FACADE DXGI flip hwnd=%p size=%ux%u hr=0x%08x\n",opaqueHwnd,width,height,hr); QkFacadeTrace(line);
     }
-    if(SUCCEEDED(hr)) hr=CD3DSurface::CreateFacade(manager,state,width,height,D3DFMT_A8R8G8B8,&s->m_rgBackBuffers[0],backBuffer.Get());
+    if(SUCCEEDED(hr)) hr=CD3DSurface::CreateFacade(manager,state,width,height,D3DFMT_A8R8G8B8,&s->m_rgBackBuffers[0]);
     if(FAILED(hr)){s->Release();return hr;}
     *out=s; return S_OK;
+}
+HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT height)
+{
+    // 原 UpdateFlippingChain 已释放目标表面；没有任何跨帧 DXGI buffer/view 引用。
+    m_facadeState->context->OMSetRenderTargets(0,nullptr,nullptr);
+    HRESULT hr=m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
+    if(FAILED(hr)) return FAILED(m_facadeState->DeviceStatus())?WGXERR_DISPLAYSTATEINVALID:hr;
+    ReleaseInterface(m_rgBackBuffers[0]);
+    hr=CD3DSurface::CreateFacade(manager,m_facadeState.Get(),width,height,D3DFMT_A8R8G8B8,&m_rgBackBuffers[0]);
+    m_facadeFirstPresent=true;
+    return hr;
 }
 #endif

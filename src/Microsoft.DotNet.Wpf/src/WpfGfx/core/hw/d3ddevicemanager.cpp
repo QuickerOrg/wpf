@@ -924,6 +924,8 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
         pPresentParams->BackBufferFormat=D3DFMT_A8R8G8B8;
         pPresentParams->BackBufferWidth=1; pPresentParams->BackBufferHeight=1;
         pPresentParams->SwapEffect=D3DSWAPEFFECT_COPY; pPresentParams->hDeviceWindow=hwnd;
+        pPresentParams->PresentationInterval=(dwFlags&MilRTInitialization::PresentImmediately)
+            ?D3DPRESENT_INTERVAL_IMMEDIATE:D3DPRESENT_INTERVAL_ONE;
     }
     CGuard<CCriticalSection> guard(m_csManagement);
     if(pDisplay->DisplaySet()->DangerousHasDisplayStateChanged()) return WGXERR_DISPLAYSTATEINVALID;

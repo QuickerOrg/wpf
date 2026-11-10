@@ -51,7 +51,16 @@ public:
 #if QUICKER_WPF_D3D11_FACADE
     static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
         UINT width, UINT height, CD3DSwapChain **out, HWND opaqueHwnd=nullptr);
-    ComPtr<IDXGISwapChain> m_facadeSwapChain;
+    ComPtr<IDXGISwapChain1> m_facadeSwapChain;
+    ComPtr<QkD3D11State> m_facadeState;
+    void DetachFacade() {
+        // HWND 的交换链不可等资源缓存淘汰后才释放，否则样式切换重建会重复关联。
+        m_facadeSwapChain.Reset();
+        if(m_facadeState) m_facadeState->context->Flush();
+    }
+    UINT m_facadeSyncInterval = 0;
+    mutable bool m_facadeFirstPresent = true;
+    HRESULT ResizeFacade(CD3DResourceManager *manager, UINT width, UINT height);
 #endif
 
     static HRESULT Create(

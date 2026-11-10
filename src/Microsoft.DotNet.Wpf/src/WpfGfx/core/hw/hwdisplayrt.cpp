@@ -227,6 +227,9 @@ CHwDisplayRenderTarget::CHwDisplayRenderTarget(
 //-------------------------------------------------------------------------
 CHwDisplayRenderTarget::~CHwDisplayRenderTarget()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if(m_pD3DSwapChain) m_pD3DSwapChain->DetachFacade();
+#endif
     ReleaseInterface(m_pD3DSwapChain);
 #if DBG_STEP_RENDERING
     // NULL the parent so CHwSurfaceRT won't try to release it
