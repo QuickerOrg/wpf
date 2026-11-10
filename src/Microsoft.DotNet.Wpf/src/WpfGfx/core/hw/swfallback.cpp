@@ -244,6 +244,11 @@ CHwSoftwareFallback::DrawBitmap(
     UINT uTargetHeight
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    // 区别单图元软件光栅化与整窗软件目标；只写显式诊断日志。
+    QkFacadeTrace("QK-FACADE-SOFTWARE primitive=DrawBitmap\n");
+#endif
+
     HRESULT hr = S_OK;
     CRectF<CoordinateSpace::Device> rcTrueBounds;
     
@@ -341,6 +346,11 @@ CHwSoftwareFallback::FillPath(
     UINT uTargetHeight
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    // 区别单图元软件光栅化与整窗软件目标；只写显式诊断日志。
+    QkFacadeTrace("QK-FACADE-SOFTWARE primitive=FillPath\n");
+#endif
+
     HRESULT hr = S_OK;
     CMilRectF rcBounds;
 
@@ -455,6 +465,11 @@ CHwSoftwareFallback::DrawGlyphs(
     UINT uTargetHeight
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    // 区别单图元软件光栅化与整窗软件目标；只写显式诊断日志。
+    QkFacadeTrace("QK-FACADE-SOFTWARE primitive=DrawGlyphs\n");
+#endif
+
     HRESULT hr = S_OK;
     
     Assert(pars.pContextState);

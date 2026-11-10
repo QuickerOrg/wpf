@@ -58,7 +58,10 @@ HRESULT QkFacadeUnimpl(const char *name)
     static SRWLOCK lock = SRWLOCK_INIT;
     static std::set<std::string> reported;
     AcquireSRWLockExclusive(&lock);
-    if (reported.insert(name).second)
+    // 全窗口巡检保留重复命中，避免后续窗口被进程级去重掩盖；返回失败语义不变。
+    WCHAR sweep[2] = {};
+    bool repeat = GetEnvironmentVariableW(L"QUICKER_FACADE_WINDOW_SWEEP", sweep, ARRAYSIZE(sweep)) == 1 && sweep[0] == L'1';
+    if (reported.insert(name).second || repeat)
     {
         std::string line = std::string("QK-FACADE-UNIMPL ") + name + "\n";
         QkFacadeTrace(line.c_str());
@@ -370,10 +373,10 @@ HRESULT QkD3D11State::CreateBuffer(UINT bytes, UINT bind, QkFacadeBuffer **out)
     QkAccount(b->buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"dynamic-VB":"dynamic-IB",bytes);
     b->context = context; b->size = bytes; b->generation = generation; *out = b; return S_OK;
 }
-HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h)
+HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque)
 {
     ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty);
-    target = rtv; width = w; height = h;
+    target = rtv; width = w; height = h; targetOpaque = opaque;
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     return DeviceStatus();
 }
@@ -518,7 +521,8 @@ HRESULT QkD3D11State::Apply()
     if ((m_fvf & D3DFVF_POSITION_MASK) != D3DFVF_XYZ && (m_fvf & D3DFVF_POSITION_MASK) != D3DFVF_XYZRHW)
         return QkFacadeUnimpl("Draw.vertexLayout");
     unsigned long long key = m_states[D3DRS_ALPHABLENDENABLE] | (static_cast<unsigned long long>(m_states[D3DRS_SRCBLEND]) << 8) |
-        (static_cast<unsigned long long>(m_states[D3DRS_DESTBLEND]) << 16) | (static_cast<unsigned long long>(m_states[D3DRS_COLORWRITEENABLE]) << 24);
+        (static_cast<unsigned long long>(m_states[D3DRS_DESTBLEND]) << 16) | (static_cast<unsigned long long>(m_states[D3DRS_COLORWRITEENABLE]) << 24)
+        | (static_cast<unsigned long long>(targetOpaque) << 32);
     auto found = m_blends.find(key);
     if (found == m_blends.end())
     {
@@ -530,6 +534,8 @@ HRESULT QkD3D11State::Apply()
         if (b.DestBlendAlpha == D3D11_BLEND_INV_SRC_COLOR) b.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
         if (!b.SrcBlend || !b.DestBlend) return QkFacadeUnimpl("Blend.factor");
         b.BlendOp = b.BlendOpAlpha = D3D11_BLEND_OP_ADD; b.RenderTargetWriteMask = static_cast<UINT8>(m_states[D3DRS_COLORWRITEENABLE]);
+        // XRGB 逻辑目标的 Alpha 恒为 1；物理 BGRA 仍供 flip GPU 拷贝与 GetDC 使用。
+        if(targetOpaque) b.RenderTargetWriteMask &= ~D3D11_COLOR_WRITE_ENABLE_ALPHA;
         ComPtr<ID3D11BlendState> state;
         HRESULT hr = device->CreateBlendState(&bd, &state); if(SUCCEEDED(hr)) QkAccount(state.Get(),"blend-state"); if (FAILED(hr)) return hr;
         found = m_blends.insert(std::make_pair(key, state)).first;

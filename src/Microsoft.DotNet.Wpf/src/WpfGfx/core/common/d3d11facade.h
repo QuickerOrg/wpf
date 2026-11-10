@@ -187,7 +187,8 @@ public:
         typed->buffer = base->buffer; typed->context = base->context; typed->size = base->size; typed->generation = base->generation;
         base->Release(); *out = typed; return S_OK;
     }
-    HRESULT BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h);
+    HRESULT BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque = false);
+    bool targetOpaque = false;
     HRESULT RecordPresent();
     HRESULT GetNumQueuedPresents(UINT *count);
     HRESULT Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start);

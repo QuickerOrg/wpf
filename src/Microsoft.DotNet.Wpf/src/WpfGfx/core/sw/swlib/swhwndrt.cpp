@@ -290,6 +290,15 @@ HRESULT CSwRenderTargetHWND::Create(
         ));
 
     IFC((*ppRT)->Resize(uWidth, uHeight));
+#if QUICKER_WPF_D3D11_FACADE
+    // 仅门面诊断记录实际成功创建的软件 HWND 目标；不改变回退条件。
+    {
+        char line[192];
+        StringCchPrintfA(line, ARRAYSIZE(line), "QK-FACADE-SOFTWARE hwnd=%p flags=0x%x size=%ux%u\n", hwnd, nFlags, uWidth, uHeight);
+        QkFacadeTrace(line);
+    }
+#endif
+
 
 Cleanup:
     if (FAILED(hr))

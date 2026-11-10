@@ -381,8 +381,12 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
         return FAILED(hr)?hr:DeviceStatus();
     }
     if(!dst->texture) return E_INVALIDARG;
+    D3D11_TEXTURE2D_DESC srcNative={},dstNative={};
+    src->texture->GetDesc(&srcNative); dst->texture->GetDesc(&dstNative);
     ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty); context->OMSetRenderTargets(0,nullptr,nullptr);
-    if(!presentClipping && sameSize && src->desc.Format==dst->desc.Format && src->texture.Get()!=dst->texture.Get()) {
+    // 逻辑 XRGB 的 HWND 保留表面使用 BGRA（供 flip/GDI），普通纹理使用 BGRX。
+    // 两者不是同一个 DXGI 类型组，不能用无返回值的 CopySubresourceRegion 静默丢弃复制。
+    if(!presentClipping && sameSize && src->desc.Format==dst->desc.Format && srcNative.Format==dstNative.Format && src->texture.Get()!=dst->texture.Get()) {
         D3D11_BOX box={static_cast<UINT>(a.left),static_cast<UINT>(a.top),0,static_cast<UINT>(a.right),static_cast<UINT>(a.bottom),1};
         context->CopySubresourceRegion(dst->texture.Get(),dst->mip,b.left,b.top,0,src->texture.Get(),src->mip,&box);
         QkFacadeTrace("QK-FACADE CopySubresourceRegion\n");
@@ -390,12 +394,12 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     }
     // 缩放与同资源不同 mip 通过 shader blit；为源 mip 建独立 SRV，避免读写重叠。
     if(!dst->rtv || (src->texture.Get()==dst->texture.Get() && src->mip==dst->mip)) return QkFacadeUnimpl("Copy.overlappingSubresource");
-    auto oldTarget=target; UINT oldW=width,oldH=height; auto oldVP=m_viewport; DWORD oldFVF=m_fvf;
+    auto oldTarget=target; bool oldOpaque=targetOpaque; UINT oldW=width,oldH=height; auto oldVP=m_viewport; DWORD oldFVF=m_fvf;
     DWORD states[210],stages[8][33],samplers[16][14]; memcpy(states,m_states,sizeof(states)); memcpy(stages,m_stages,sizeof(stages)); memcpy(samplers,m_samplers,sizeof(samplers));
     auto oldVS=m_boundVS,oldPS=m_boundPS; auto oldTex=m_textures[0];
     ComPtr<QkTextureHandle> t; t.Attach(new QkTextureHandle); t->texture=src->texture; t->srv=src->srv; t->generation=generation;
     m_textures[0]=t; m_boundVS.Reset(); m_boundPS.Reset();
-    target=dst->rtv; width=dst->desc.Width; height=dst->desc.Height; m_viewport={0,0,width,height,0,1};
+    target=dst->rtv; targetOpaque=dst->desc.Format==D3DFMT_X8R8G8B8; width=dst->desc.Width; height=dst->desc.Height; m_viewport={0,0,width,height,0,1};
     m_fvf=D3DFVF_XYZ|D3DFVF_DIFFUSE|D3DFVF_TEX1;
     m_states[D3DRS_ALPHABLENDENABLE]=FALSE; m_states[D3DRS_SCISSORTESTENABLE]=FALSE; m_states[D3DRS_COLORWRITEENABLE]=15;
     m_stages[0][D3DTSS_COLOROP]=m_stages[0][D3DTSS_ALPHAOP]=D3DTOP_SELECTARG1;
@@ -421,7 +425,7 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     V vertices[]={{l,top,0,~0U,u,v},{right,top,0,~0U,u1,v},{l,bottom,0,~0U,u,v1},{right,bottom,0,~0U,u1,v1}};
     HRESULT hr=DrawUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V));
     if(SUCCEEDED(hr)) QkFacadeTrace("QK-FACADE shader blit\n");
-    target=oldTarget;width=oldW;height=oldH;m_viewport=oldVP;m_fvf=oldFVF;m_boundVS=oldVS;m_boundPS=oldPS;m_textures[0]=oldTex;
+    target=oldTarget;targetOpaque=oldOpaque;width=oldW;height=oldH;m_viewport=oldVP;m_fvf=oldFVF;m_boundVS=oldVS;m_boundPS=oldPS;m_textures[0]=oldTex;
     memcpy(m_states,states,sizeof(states));memcpy(m_stages,stages,sizeof(stages));memcpy(m_samplers,samplers,sizeof(samplers));
     return hr;
 }

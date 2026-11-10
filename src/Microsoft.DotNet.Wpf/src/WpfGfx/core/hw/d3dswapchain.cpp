@@ -398,7 +398,7 @@ CD3DSwapChain::ReleaseDC(
 
 
 #if QUICKER_WPF_D3D11_FACADE
-HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,CD3DSwapChain **out,HWND opaqueHwnd)
+HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,D3DFORMAT format,CD3DSwapChain **out,HWND opaqueHwnd)
 {
     *out=nullptr; CD3DSwapChain *s=new(1) CD3DSwapChain(nullptr,1,nullptr); if(!s) return E_OUTOFMEMORY;
     s->AddRef(); s->CD3DResource::Init(manager,0);
@@ -419,7 +419,8 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
         if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
         char line[240]; StringCchPrintfA(line,240,"QK-FACADE DXGI flip hwnd=%p size=%ux%u hr=0x%08x\n",opaqueHwnd,width,height,hr); QkFacadeTrace(line);
     }
-    if(SUCCEEDED(hr)) hr=CD3DSurface::CreateFacade(manager,state,width,height,D3DFMT_A8R8G8B8,&s->m_rgBackBuffers[0]);
+    // 物理纹理均为 BGRA8，但逻辑 XRGB/ARGB 语义必须保留，否则原文字路径会错误禁用 ClearType。
+    if(SUCCEEDED(hr)) hr=CD3DSurface::CreateFacade(manager,state,width,height,format,&s->m_rgBackBuffers[0]);
     if(FAILED(hr)){s->Release();return hr;}
     *out=s; return S_OK;
 }
@@ -430,8 +431,9 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
     HRESULT hr=m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
     if(FAILED(hr)) return FAILED(m_facadeState->DeviceStatus())?WGXERR_DISPLAYSTATEINVALID:hr;
     m_facadePresentHistory.Reset();
+    D3DFORMAT format=m_rgBackBuffers[0]->Desc().Format;
     ReleaseInterface(m_rgBackBuffers[0]);
-    hr=CD3DSurface::CreateFacade(manager,m_facadeState.Get(),width,height,D3DFMT_A8R8G8B8,&m_rgBackBuffers[0]);
+    hr=CD3DSurface::CreateFacade(manager,m_facadeState.Get(),width,height,format,&m_rgBackBuffers[0]);
     m_facadeFirstPresent=true;
     return hr;
 }

@@ -541,6 +541,10 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     else hr=state->device->CreateTexture2D(&td,nullptr,&s->m_facadeTexture);
     if(SUCCEEDED(hr)) QkAccount(s->m_facadeTexture.Get(),backBuffer?"DXGI-backbuffer":"GDI-compatible",static_cast<ULONGLONG>(width)*height*4);
     if(SUCCEEDED(hr)) hr=state->device->CreateRenderTargetView(s->m_facadeTexture.Get(),nullptr,&s->m_facadeRTV);
+    if(SUCCEEDED(hr) && format==D3DFMT_X8R8G8B8) {
+        // D3D9 XRGB 读取 Alpha 为 1，且任何绘图均不能改变它。
+        const float opaqueBlack[4]={0,0,0,1}; state->context->ClearRenderTargetView(s->m_facadeRTV.Get(),opaqueBlack);
+    }
     if(SUCCEEDED(hr)) hr=s->m_facadeTexture.As(&s->m_facadeGDI);
     if(FAILED(hr)){s->Release();return hr;}
     ZeroMemory(&s->m_d3dsd,sizeof(s->m_d3dsd)); s->m_d3dsd.Width=width; s->m_d3dsd.Height=height;

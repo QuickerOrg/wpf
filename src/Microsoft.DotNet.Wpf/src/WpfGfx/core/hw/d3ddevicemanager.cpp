@@ -942,7 +942,8 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
     if (pPresentParams) {
         ZeroMemory(pPresentParams, sizeof(*pPresentParams));
         pPresentParams->Windowed=TRUE; pPresentParams->BackBufferCount=1;
-        pPresentParams->BackBufferFormat=D3DFMT_A8R8G8B8;
+        // 与原设备路径一致：普通窗口用 XRGB，仅需要目标 Alpha 时用 ARGB。
+        ChooseTargetFormat(dwFlags, &pPresentParams->BackBufferFormat);
         pPresentParams->BackBufferWidth=1; pPresentParams->BackBufferHeight=1;
         pPresentParams->SwapEffect=D3DSWAPEFFECT_COPY; pPresentParams->hDeviceWindow=hwnd;
         pPresentParams->PresentationInterval=(dwFlags&MilRTInitialization::PresentImmediately)
