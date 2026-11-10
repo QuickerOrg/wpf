@@ -901,10 +901,10 @@ CD3DDeviceLevel1::~CD3DDeviceLevel1()
 
     ReleaseInterface(m_pD3DDevice);
 #if QUICKER_WPF_D3D11_FACADE
+    // Release 下 Enter 也持有共享锁，不能沿用原来仅 Debug Leave 的析构约定。
+    Leave();
     ReleaseInterface(m_facade);
-#endif
-
-#if DBG
+#elif DBG
     // Only need to leave for entry assert checks in ~CAssertEntry
     Leave();
 #endif
@@ -1762,7 +1762,17 @@ CD3DDeviceLevel1::MarkUnusable(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    m_hrDisplayInvalid=WGXERR_DISPLAYSTATEINVALID; m_resourceManager.DestroyAllResources(); return;
+    QkFacadeSharedGuard guard;
+    m_hrDisplayInvalid = WGXERR_DISPLAYSTATEINVALID;
+    // 与原实现相同：跨线程只标记，资源清理延迟到设备入口保护内，且仅通知一次。
+    if (!m_fDeviceLostProcessed && IsProtected(fMayBeMultithreadedCall)) {
+        m_fDeviceLostProcessed = true;
+        ResetMarkers();
+        QkFacadeTrace("QK-FACADE manager unusable notification\n");
+        m_pManager->UnusableNotification(this);
+        m_resourceManager.DestroyAllResources();
+    }
+    return;
 #else
 
     // No entry check as this method is thread safe
@@ -3365,6 +3375,11 @@ CD3DDeviceLevel1::Present(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
+    m_facade->ExperimentRemoval();
+    if (FAILED(m_hrDisplayInvalid) || FAILED(m_facade->DeviceStatus())) {
+        MarkUnusable(false);
+        return WGXERR_DISPLAYSTATEINVALID;
+    }
     if(pD3DSwapChain->m_facadeSwapChain) {
         HWND hwnd=pMILDC->GetHWND();
         if(!IsWindow(hwnd)) return HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE);
@@ -3375,38 +3390,71 @@ CD3DDeviceLevel1::Present(
         RECT src={0,0,w,h},dst=src;
         if(prcSource) src=*reinterpret_cast<const RECT *>(prcSource);
         if(prcDest) dst=*reinterpret_cast<const RECT *>(prcDest);
-        if(src.right-src.left!=dst.right-dst.left || src.bottom-src.top!=dst.bottom-dst.top)
-            return QkFacadeUnimpl("Present.scaledSourceDestination");
-        if(src.left<0 || src.top<0 || src.right>w || src.bottom>h || dst.left<0 || dst.top<0 || dst.right>w || dst.bottom>h)
-            return QkFacadeUnimpl("Present.sourceDestinationBounds");
+        WCHAR experiment[4] = {}; static UINT experimentPresents = 0; bool validatePresent=false;
+        if (GetEnvironmentVariableW(L"QUICKER_FACADE_EXPERIMENT_PRESENT",experiment,ARRAYSIZE(experiment)) == 1 && experiment[0] == L'1' && experimentPresents < 4) {
+            validatePresent=true;
+            switch(experimentPresents++) {
+            case 0: src={0,0,w,h};dst={10,15,w-20,h-30};break;
+            case 1: src={-30,-20,w+10,h+15};dst={0,0,w,h};break;
+            case 2: src={0,0,w,h};dst={-40,-30,w+50,h+20};break;
+            case 3: src={w+10,0,w+30,h};dst={0,0,w,h};break;
+            }
+        }
+        const bool transformed = src.right-src.left!=dst.right-dst.left || src.bottom-src.top!=dst.bottom-dst.top ||
+            src.left<0 || src.top<0 || src.right>w || src.bottom>h || dst.left<0 || dst.top<0 || dst.right>w || dst.bottom>h;
         if(IsRectEmpty(&src) || IsRectEmpty(&dst)) return S_OK;
         ComPtr<ID3D11Texture2D> buffer;
         HRESULT hr=pD3DSwapChain->m_facadeSwapChain->GetBuffer(0,IID_PPV_ARGS(&buffer));
         if(FAILED(hr)) return hr;
+        ComPtr<ID3D11Texture2D> presentTarget=buffer;
+        if(transformed || pD3DSwapChain->m_facadePresentHistory) {
+            if(!pD3DSwapChain->m_facadePresentHistory) {
+                // 缩放/平移后的显示历史与逻辑保留表面不同，目标矩形外须保留旧像素。
+                // 仅首次命中这类参数时分配；普通相等 source/destination 路径不增加驻留。
+                D3D11_TEXTURE2D_DESC desc;surface->m_facadeTexture->GetDesc(&desc);
+                desc.MiscFlags=0;desc.BindFlags=D3D11_BIND_RENDER_TARGET;
+                hr=m_facade->device->CreateTexture2D(&desc,nullptr,&pD3DSwapChain->m_facadePresentHistory);
+                if(FAILED(hr)) return hr;
+                QkAccount(pD3DSwapChain->m_facadePresentHistory.Get(),"present-history",static_cast<ULONGLONG>(w)*h*4);
+                m_facade->context->CopyResource(pD3DSwapChain->m_facadePresentHistory.Get(),surface->m_facadeTexture.Get());
+            }
+            presentTarget=pD3DSwapChain->m_facadePresentHistory;
+        }
         // 保留表面是 WPF 的唯一绘图目标；flip 不会丢失尚未再次重画的区域。
         std::vector<RECT> dirty;
-        if(!pD3DSwapChain->m_facadeFirstPresent && pDirtyRegion && pDirtyRegion->rdh.nCount) {
+        if(transformed || pD3DSwapChain->m_facadePresentHistory) {
+            // 显示历史启用后提交整个 source/destination 映射：参数恢复正常时也必须
+            // 重画映射区域，不能拿逻辑表面的旧 dirty hints 保留上一种变换的像素。
+            // 目标 viewport 裁剪，源裁剪保持原仿射比例。
+            hr=m_facade->PresentBlit(surface->m_facadeTexture.Get(),presentTarget.Get(),src,dst,validatePresent);
+            if(FAILED(hr)) return hr;
+            if(transformed) QkFacadeTrace("QK-FACADE Present clipped/scaled GPU blit\n");
+        } else if(!pD3DSwapChain->m_facadeFirstPresent && pDirtyRegion && pDirtyRegion->rdh.nCount) {
             const RECT *rects=reinterpret_cast<const RECT *>(pDirtyRegion->Buffer);
             for(DWORD i=0;i<pDirtyRegion->rdh.nCount;++i) {
                 RECT clipped; if(IntersectRect(&clipped,&rects[i],&src)) {
                     RECT target=clipped; OffsetRect(&target,dst.left-src.left,dst.top-src.top);
                     D3D11_BOX box={static_cast<UINT>(clipped.left),static_cast<UINT>(clipped.top),0,static_cast<UINT>(clipped.right),static_cast<UINT>(clipped.bottom),1};
-                    m_facade->context->CopySubresourceRegion(buffer.Get(),0,target.left,target.top,0,surface->m_facadeTexture.Get(),0,&box);
+                    m_facade->context->CopySubresourceRegion(presentTarget.Get(),0,target.left,target.top,0,surface->m_facadeTexture.Get(),0,&box);
                     dirty.push_back(target);
                 }
             }
             if(dirty.empty()) return S_OK;
         } else if(!pD3DSwapChain->m_facadeFirstPresent && prcSource) {
             D3D11_BOX box={static_cast<UINT>(src.left),static_cast<UINT>(src.top),0,static_cast<UINT>(src.right),static_cast<UINT>(src.bottom),1};
-            m_facade->context->CopySubresourceRegion(buffer.Get(),0,dst.left,dst.top,0,surface->m_facadeTexture.Get(),0,&box);
+            m_facade->context->CopySubresourceRegion(presentTarget.Get(),0,dst.left,dst.top,0,surface->m_facadeTexture.Get(),0,&box);
             dirty.push_back(dst);
         } else {
             // 首帧/resize 后全量初始化，包括 source rect 外的保留区域。
-            m_facade->context->CopyResource(buffer.Get(),surface->m_facadeTexture.Get());
+            m_facade->context->CopyResource(presentTarget.Get(),surface->m_facadeTexture.Get());
             if(src.left!=dst.left || src.top!=dst.top) {
                 D3D11_BOX box={static_cast<UINT>(src.left),static_cast<UINT>(src.top),0,static_cast<UINT>(src.right),static_cast<UINT>(src.bottom),1};
-                m_facade->context->CopySubresourceRegion(buffer.Get(),0,dst.left,dst.top,0,surface->m_facadeTexture.Get(),0,&box);
+                m_facade->context->CopySubresourceRegion(presentTarget.Get(),0,dst.left,dst.top,0,surface->m_facadeTexture.Get(),0,&box);
             }
+        }
+        if(pD3DSwapChain->m_facadePresentHistory) {
+            m_facade->context->CopyResource(buffer.Get(),presentTarget.Get());
+            dirty.clear(); // 提交完整显示历史，不能读取 flip 轮换缓冲的旧内容。
         }
         DXGI_PRESENT_PARAMETERS params={}; params.DirtyRectsCount=static_cast<UINT>(dirty.size()); params.pDirtyRects=dirty.empty()?nullptr:dirty.data();
         hr=pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
@@ -3417,7 +3465,12 @@ CD3DDeviceLevel1::Present(
         }
         if(hr==DXGI_STATUS_MODE_CHANGED || hr==DXGI_STATUS_MODE_CHANGE_IN_PROGRESS ||
             hr==DXGI_ERROR_DEVICE_REMOVED || hr==DXGI_ERROR_DEVICE_RESET ||
-            hr==DXGI_ERROR_DEVICE_HUNG || hr==DXGI_ERROR_DRIVER_INTERNAL_ERROR) return WGXERR_DISPLAYSTATEINVALID;
+            hr==DXGI_ERROR_DEVICE_HUNG || hr==DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
+            // 在目标被丢弃前就退出可用设备分区，不能等待另一个窗口再次 Present。
+            IGNORE_HR(m_facade->DeviceStatus());
+            MarkUnusable(false);
+            return WGXERR_DISPLAYSTATEINVALID;
+        }
         if(hr==DXGI_ERROR_INVALID_CALL) return WGXERR_NEED_RECREATE_AND_PRESENT;
         if(hr==DXGI_ERROR_WAS_STILL_DRAWING) return D3DERR_WASSTILLDRAWING;
         if(FAILED(hr)) return hr;
@@ -4115,7 +4168,7 @@ HRESULT
 CD3DDeviceLevel1::BeginScene()
 {
 #if QUICKER_WPF_D3D11_FACADE
-    m_fInScene=true; return m_facade->DeviceStatus();
+    m_fInScene=true; return CheckDeviceState(nullptr);
 #else
 
     HRESULT hr = S_OK;
@@ -4151,7 +4204,7 @@ HRESULT
 CD3DDeviceLevel1::EndScene()
 {
 #if QUICKER_WPF_D3D11_FACADE
-    m_fInScene=false; return m_facade->DeviceStatus();
+    m_fInScene=false; return CheckDeviceState(nullptr);
 #else
 
     HRESULT hr = S_OK;
@@ -6468,7 +6521,9 @@ CD3DDeviceLevel1::CheckDeviceState(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return m_facade->DeviceStatus();
+    HRESULT hr = FAILED(m_hrDisplayInvalid) ? m_hrDisplayInvalid : m_facade->DeviceStatus();
+    if (FAILED(hr)) MarkUnusable(true);
+    return hr;
 #else
 
     HRESULT hr = S_OK;

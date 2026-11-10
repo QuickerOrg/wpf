@@ -52,9 +52,11 @@ public:
     static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
         UINT width, UINT height, CD3DSwapChain **out, HWND opaqueHwnd=nullptr);
     ComPtr<IDXGISwapChain1> m_facadeSwapChain;
+    mutable ComPtr<ID3D11Texture2D> m_facadePresentHistory;
     ComPtr<QkD3D11State> m_facadeState;
     void DetachFacade() {
         // HWND 的交换链不可等资源缓存淘汰后才释放，否则样式切换重建会重复关联。
+        m_facadePresentHistory.Reset();
         m_facadeSwapChain.Reset();
         if(m_facadeState) m_facadeState->context->Flush();
     }

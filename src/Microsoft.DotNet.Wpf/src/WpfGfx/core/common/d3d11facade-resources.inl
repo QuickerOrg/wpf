@@ -61,6 +61,7 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
 
 HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD flags)
 {
+    QkFacadeSharedGuard sharedGuard;
     if(!out || locked) return E_INVALIDARG;
     RECT rc=rect?*rect:RECT{0,0,static_cast<LONG>(desc.Width),static_cast<LONG>(desc.Height)};
     if(rc.left<0 || rc.top<0 || rc.right<=rc.left || rc.bottom<=rc.top ||
@@ -92,6 +93,7 @@ HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD fla
 }
 HRESULT QkSurfaceHandle::UnlockRect()
 {
+    QkFacadeSharedGuard sharedGuard;
     if(!locked) return E_INVALIDARG;
     locked=false;
     if(texture && !(lockFlags&D3DLOCK_READONLY)) {
@@ -103,6 +105,7 @@ HRESULT QkSurfaceHandle::UnlockRect()
 }
 HRESULT QkSurfaceHandle::UploadRect(const RECT &rect,const BYTE *data,UINT pitch)
 {
+    QkFacadeSharedGuard sharedGuard;
     if(!texture || !data) return E_INVALIDARG;
     D3D11_BOX box={static_cast<UINT>(rect.left),static_cast<UINT>(rect.top),0,
         static_cast<UINT>(rect.right),static_cast<UINT>(rect.bottom),1};
@@ -113,6 +116,7 @@ HRESULT QkSurfaceHandle::UploadRect(const RECT &rect,const BYTE *data,UINT pitch
 }
 HRESULT QkTextureHandle::AddDirtyRect(const RECT *rect)
 {
+    QkFacadeSharedGuard sharedGuard;
     if(!texture) return S_OK; // SYSTEMMEM 脏区在 UpdateTexture 时传输。
     auto s=levels[0];
     if(s->pixels.empty() && !s->reference) return E_UNEXPECTED;
@@ -360,13 +364,14 @@ HRESULT QkD3D11State::ApplyShaders()
     return S_OK;
 }
 
-HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter)
+HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter, bool presentClipping)
 {
     if(!src || !dst || src->generation!=generation || dst->generation!=generation) return E_INVALIDARG;
     RECT a=srcRect?*srcRect:RECT{0,0,static_cast<LONG>(src->desc.Width),static_cast<LONG>(src->desc.Height)};
     RECT b=dstRect?*dstRect:RECT{0,0,static_cast<LONG>(dst->desc.Width),static_cast<LONG>(dst->desc.Height)};
-    if(a.left<0 || a.top<0 || a.right<=a.left || a.bottom<=a.top || static_cast<UINT>(a.right)>src->desc.Width || static_cast<UINT>(a.bottom)>src->desc.Height ||
-       b.left<0 || b.top<0 || b.right<=b.left || b.bottom<=b.top || static_cast<UINT>(b.right)>dst->desc.Width || static_cast<UINT>(b.bottom)>dst->desc.Height) return E_INVALIDARG;
+    if(!presentClipping && (a.left<0 || a.top<0 || a.right<=a.left || a.bottom<=a.top || static_cast<UINT>(a.right)>src->desc.Width || static_cast<UINT>(a.bottom)>src->desc.Height ||
+       b.left<0 || b.top<0 || b.right<=b.left || b.bottom<=b.top || static_cast<UINT>(b.right)>dst->desc.Width || static_cast<UINT>(b.bottom)>dst->desc.Height)) return E_INVALIDARG;
+    if(IsRectEmpty(&a) || IsRectEmpty(&b)) return S_OK;
     bool sameSize=a.right-a.left==b.right-b.left && a.bottom-a.top==b.bottom-b.top;
     if(!src->texture) {
         if(!sameSize || !dst->texture || src->desc.Format!=dst->desc.Format) return E_INVALIDARG;
@@ -377,7 +382,7 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     }
     if(!dst->texture) return E_INVALIDARG;
     ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty); context->OMSetRenderTargets(0,nullptr,nullptr);
-    if(sameSize && src->desc.Format==dst->desc.Format && src->texture.Get()!=dst->texture.Get()) {
+    if(!presentClipping && sameSize && src->desc.Format==dst->desc.Format && src->texture.Get()!=dst->texture.Get()) {
         D3D11_BOX box={static_cast<UINT>(a.left),static_cast<UINT>(a.top),0,static_cast<UINT>(a.right),static_cast<UINT>(a.bottom),1};
         context->CopySubresourceRegion(dst->texture.Get(),dst->mip,b.left,b.top,0,src->texture.Get(),src->mip,&box);
         QkFacadeTrace("QK-FACADE CopySubresourceRegion\n");
@@ -400,10 +405,91 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     struct V{float x,y,z;DWORD c;float u,v;};
     float l=static_cast<float>(b.left),top=static_cast<float>(b.top),right=static_cast<float>(b.right),bottom=static_cast<float>(b.bottom);
     float u=a.left/static_cast<float>(src->desc.Width),v=a.top/static_cast<float>(src->desc.Height),u1=a.right/static_cast<float>(src->desc.Width),v1=a.bottom/static_cast<float>(src->desc.Height);
+    if(presentClipping) {
+        float x0=max(0.0f,static_cast<float>(a.left)), y0=max(0.0f,static_cast<float>(a.top));
+        float x1=min(static_cast<float>(src->desc.Width),static_cast<float>(a.right));
+        float y1=min(static_cast<float>(src->desc.Height),static_cast<float>(a.bottom));
+        if(x0>=x1 || y0>=y1) {
+            // 空交集也必须走下面的状态恢复，提交退化三角形即可。
+            x1=x0; y1=y0;
+        }
+        float sx=(right-l)/(a.right-a.left),sy=(bottom-top)/(a.bottom-a.top);
+        right=l+(x1-a.left)*sx; bottom=top+(y1-a.top)*sy;
+        l+=(x0-a.left)*sx; top+=(y0-a.top)*sy;
+        u=x0/src->desc.Width;v=y0/src->desc.Height;u1=x1/src->desc.Width;v1=y1/src->desc.Height;
+    }
     V vertices[]={{l,top,0,~0U,u,v},{right,top,0,~0U,u1,v},{l,bottom,0,~0U,u,v1},{right,bottom,0,~0U,u1,v1}};
     HRESULT hr=DrawUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V));
     if(SUCCEEDED(hr)) QkFacadeTrace("QK-FACADE shader blit\n");
     target=oldTarget;width=oldW;height=oldH;m_viewport=oldVP;m_fvf=oldFVF;m_boundVS=oldVS;m_boundPS=oldPS;m_textures[0]=oldTex;
     memcpy(m_states,states,sizeof(states));memcpy(m_stages,stages,sizeof(stages));memcpy(m_samplers,samplers,sizeof(samplers));
     return hr;
+}
+
+HRESULT QkD3D11State::PresentBlit(ID3D11Texture2D *source, ID3D11Texture2D *destination, const RECT &src, const RECT &dst, bool validate)
+{
+    // 仅显式实验下读回 GPU 结果，与独立 CPU 双线性参考逐像素比较；绝不上传整图。
+    auto readback=[&](ID3D11Texture2D *texture,std::vector<BYTE> &pixels)->HRESULT {
+        D3D11_TEXTURE2D_DESC desc;texture->GetDesc(&desc);
+        desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        ComPtr<ID3D11Texture2D> staging;HRESULT hr=device->CreateTexture2D(&desc,nullptr,&staging);if(FAILED(hr)) return hr;
+        context->OMSetRenderTargets(0,nullptr,nullptr);
+        context->CopyResource(staging.Get(),texture);
+        D3D11_MAPPED_SUBRESOURCE map;hr=context->Map(staging.Get(),0,D3D11_MAP_READ,0,&map);if(FAILED(hr)) return hr;
+        pixels.resize(static_cast<size_t>(desc.Width)*desc.Height*4);
+        for(UINT y=0;y<desc.Height;++y) memcpy(pixels.data()+static_cast<size_t>(y)*desc.Width*4,static_cast<BYTE*>(map.pData)+y*map.RowPitch,desc.Width*4);
+        context->Unmap(staging.Get(),0);return S_OK;
+    };
+    std::vector<BYTE> sourcePixels,previousPixels;
+    if(validate) {
+        HRESULT hr=readback(source,sourcePixels);if(FAILED(hr)) return hr;
+        hr=readback(destination,previousPixels);if(FAILED(hr)) return hr;
+    }
+    QkSurfaceHandle a,b;
+    a.texture=source; b.texture=destination; a.generation=b.generation=generation;
+    D3D11_TEXTURE2D_DESC d; source->GetDesc(&d);
+    a.desc.Width=d.Width; a.desc.Height=d.Height; a.desc.Format=D3DFMT_A8R8G8B8;
+    destination->GetDesc(&d); b.desc.Width=d.Width;b.desc.Height=d.Height;b.desc.Format=D3DFMT_A8R8G8B8;
+    HRESULT hr=device->CreateShaderResourceView(source,nullptr,&a.srv);
+    if(SUCCEEDED(hr)) hr=device->CreateRenderTargetView(destination,nullptr,&b.rtv);
+    if(SUCCEEDED(hr)) hr=Copy(&a,&src,&b,&dst,D3DTEXF_LINEAR,true);
+    if(SUCCEEDED(hr) && validate) {
+        std::vector<BYTE> actual;hr=readback(destination,actual);
+        if(SUCCEEDED(hr)) {
+            UINT over2=0,maximum=0;
+            for(UINT y=0;y<b.desc.Height;++y) for(UINT x=0;x<b.desc.Width;++x) {
+                double sx=src.left+(x+0.5-dst.left)*(static_cast<double>(src.right)-src.left)/(dst.right-dst.left);
+                double sy=src.top+(y+0.5-dst.top)*(static_cast<double>(src.bottom)-src.top)/(dst.bottom-dst.top);
+                bool inside=x+0.5>=dst.left && x+0.5<dst.right && y+0.5>=dst.top && y+0.5<dst.bottom && sx>=0 && sx<a.desc.Width && sy>=0 && sy<a.desc.Height;
+                size_t offset=(static_cast<size_t>(y)*b.desc.Width+x)*4;UINT pixelMax=0;
+                for(UINT c=0;c<4;++c) {
+                    double expected=previousPixels[offset+c];
+                    if(inside) {
+                        int ix=static_cast<int>(floor(sx-0.5)),iy=static_cast<int>(floor(sy-0.5));
+                        double fx=sx-0.5-ix,fy=sy-0.5-iy;expected=0;
+                        for(int dy=0;dy<2;++dy) for(int dx=0;dx<2;++dx) {
+                            UINT px=static_cast<UINT>(max(0,min(static_cast<int>(a.desc.Width)-1,ix+dx)));
+                            UINT py=static_cast<UINT>(max(0,min(static_cast<int>(a.desc.Height)-1,iy+dy)));
+                            expected+=sourcePixels[(static_cast<size_t>(py)*a.desc.Width+px)*4+c]*(dx?fx:1-fx)*(dy?fy:1-fy);
+                        }
+                    }
+                    UINT delta=static_cast<UINT>(abs(static_cast<int>(actual[offset+c])-static_cast<int>(floor(expected+0.5))));
+                    pixelMax=max(pixelMax,delta);
+                }
+                maximum=max(maximum,pixelMax);if(pixelMax>2) ++over2;
+            }
+            char line[220];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE present-reference max=%u pixels-over-2=%u size=%ux%u\n",maximum,over2,b.desc.Width,b.desc.Height);QkFacadeTrace(line);
+            if(over2) hr=E_FAIL;
+        }
+    }
+    // 不能让即时上下文跨 Present 持有 flip buffer，后续 ResizeBuffers 必须可释放它。
+    context->OMSetRenderTargets(0,nullptr,nullptr);
+    ID3D11ShaderResourceView *empty=nullptr;context->PSSetShaderResources(0,1,&empty);
+    return hr;
+}
+
+void QkTextureHandle::GenerateMipSubLevels()
+{
+    QkFacadeSharedGuard sharedGuard;
+    context->GenerateMips(srv.Get());
 }

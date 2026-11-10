@@ -91,6 +91,28 @@ void QkD3D11State::EnterShared() {
     EnterCriticalSection(&qkSharedLock);
 }
 void QkD3D11State::LeaveShared() { LeaveCriticalSection(&qkSharedLock); }
+HRESULT QkD3D11State::DeviceStatus() const {
+    QkFacadeSharedGuard guard;
+    HRESULT hr = FAILED(removedReason) ? removedReason : device->GetDeviceRemovedReason();
+    if (FAILED(hr) && SUCCEEDED(removedReason)) {
+        for(auto state:qkSharedStates) if(state->device.Get()==device.Get()) state->removedReason=hr;
+        char line[220];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE native removed hr=0x%08x generation=%llu tick=%llu\n",hr,generation,GetTickCount64());QkFacadeTrace(line);
+    }
+    return FAILED(hr) ? WGXERR_DISPLAYSTATEINVALID : S_OK;
+}
+void QkD3D11State::ExperimentRemoval() {
+    QkFacadeSharedGuard guard;
+    static bool consumed = false;
+    WCHAR path[32768] = {};
+    DWORD n = GetEnvironmentVariableW(L"QUICKER_FACADE_EXPERIMENT_REMOVE_REQUEST", path, ARRAYSIZE(path));
+    if (consumed || !n || n >= ARRAYSIZE(path) || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return;
+    consumed = true;
+    // 只污染本进程、同一实际设备的全部包装；旧包装存活也不得再次被复用。
+    for (auto state : qkSharedStates) if (state->device.Get() == device.Get()) state->removedReason = DXGI_ERROR_DEVICE_REMOVED;
+    char line[240]; StringCchPrintfA(line, ARRAYSIZE(line),
+        "QK-FACADE experiment removed hr=0x%08x generation=%llu tick=%llu thread=%lu\n", DXGI_ERROR_DEVICE_REMOVED, generation, GetTickCount64(), GetCurrentThreadId());
+    QkFacadeTrace(line);
+}
 void QkD3D11State::Activate() {
     if(!context1) return;
     auto &active=qkActiveStates[context.Get()];
@@ -154,6 +176,11 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
 {
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     *out = nullptr;
+    WCHAR disabled[4] = {};
+    if (GetEnvironmentVariableW(L"QUICKER_FACADE_EXPERIMENT_NO_HARDWARE", disabled, ARRAYSIZE(disabled)) == 1 && disabled[0] == L'1') {
+        QkFacadeTrace("QK-FACADE software fallback: experiment no hardware\n");
+        return WGXERR_NO_HARDWARE_DEVICE;
+    }
     ComPtr<IDXGIFactory1> factory;
     HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
     if (FAILED(hr)) return hr;
@@ -182,7 +209,7 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     hr=selected->GetDesc(&state->adapter);
     if(FAILED(hr)) { state->Release(); return hr; }
     for(auto existing:qkSharedStates) {
-        if(memcmp(&existing->adapter.AdapterLuid,&state->adapter.AdapterLuid,sizeof(LUID))==0 && SUCCEEDED(existing->device->GetDeviceRemovedReason())) {
+        if(memcmp(&existing->adapter.AdapterLuid,&state->adapter.AdapterLuid,sizeof(LUID))==0 && SUCCEEDED(existing->DeviceStatus())) {
             state->device=existing->device; state->context=existing->context; state->featureLevel=existing->featureLevel; break;
         }
     }
@@ -317,6 +344,7 @@ HRESULT QkD3D11State::Initialize()
 
 HRESULT QkFacadeBuffer::Lock(UINT offset, UINT count, void **data, DWORD flags)
 {
+    QkFacadeSharedGuard sharedGuard;
     *data = nullptr;
     if (m_mapped || offset > size || count > size-offset) return E_INVALIDARG;
     D3D11_MAPPED_SUBRESOURCE mapped;
@@ -326,6 +354,7 @@ HRESULT QkFacadeBuffer::Lock(UINT offset, UINT count, void **data, DWORD flags)
 }
 HRESULT QkFacadeBuffer::Unlock()
 {
+    QkFacadeSharedGuard sharedGuard;
     if (!m_mapped) return E_INVALIDARG;
     context->Unmap(buffer.Get(), 0); m_mapped = false; return S_OK;
 }
@@ -350,6 +379,10 @@ HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h)
 }
 HRESULT QkD3D11State::RecordPresent()
 {
+    if(!m_loggedFirstPresent) {
+        char line[180];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE first-present generation=%llu tick=%llu thread=%lu\n",generation,GetTickCount64(),GetCurrentThreadId());
+        QkFacadeTrace(line);m_loggedFirstPresent=true;
+    }
     ++qkPresentSerial;
     QkAccountBudget(device.Get());
     QkAccountEvent("{\"event\":\"present\"}\n");

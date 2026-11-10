@@ -85,7 +85,7 @@ public:
     HRESULT LockRect(UINT n,D3DLOCKED_RECT *out,const RECT *rect,DWORD flags) { return n<levels.size()?levels[n]->LockRect(out,rect,flags):E_INVALIDARG; }
     HRESULT UnlockRect(UINT n) { return n<levels.size()?levels[n]->UnlockRect():E_INVALIDARG; }
     HRESULT AddDirtyRect(const RECT *);
-    void GenerateMipSubLevels() { context->GenerateMips(srv.Get()); }
+    void GenerateMipSubLevels();
 };
 using QkBaseTextureHandle = QkTextureHandle;
 class QkFacadeShader
@@ -130,6 +130,7 @@ class QkD3D11State
     ComPtr<ID3D11RasterizerState> m_raster[2];
     ComPtr<ID3D11Buffer> m_vsConstants, m_psConstants;
     float m_vsData[256][4] = {}, m_psData[224][4] = {};
+    bool m_loggedFirstPresent = false;
     bool m_vsDirty = true, m_psDirty = true, m_sizeValid = false;
     float m_sizeData[4] = {};
     ComPtr<QkFacadeShader> m_boundVS, m_boundPS;
@@ -164,12 +165,13 @@ public:
     ComPtr<ID3D11DeviceContext1> context1;
     HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out);
     HRESULT Compile(const char *source, UINT bytes, bool vertex, QkFacadeShader **out);
-    HRESULT Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter);
+    HRESULT Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter, bool presentClipping = false);
 
-    HRESULT DeviceStatus() const
-    {
-        return SUCCEEDED(device->GetDeviceRemovedReason()) ? S_OK : WGXERR_DISPLAYSTATEINVALID;
-    }
+    // 失效标记与共享设备索引都由共享锁保护；实验注入不调用系统/驱动重置。
+    HRESULT removedReason = S_OK;
+    HRESULT DeviceStatus() const;
+    void ExperimentRemoval();
+    HRESULT PresentBlit(ID3D11Texture2D *source, ID3D11Texture2D *destination, const RECT &src, const RECT &dst, bool validate = false);
     ULONG AddRef() { return InterlockedIncrement(&m_refs); }
     ULONG Release() { LONG n = InterlockedDecrement(&m_refs); if (!n) delete this; return n; }
     void ReadCaps(D3DCAPS9 *caps, UINT *memory) const;
@@ -223,4 +225,12 @@ using QkPixelShaderHandle = IDirect3DPixelShader9;
 using QkStateHandle = IDirect3DDevice9;
 using QkVertexBufferHandle = IDirect3DVertexBuffer9;
 using QkIndexBufferHandle = IDirect3DIndexBuffer9;
+#endif
+
+#if QUICKER_WPF_D3D11_FACADE
+// 管理器锁之前先持共享锁，避免显示变更/设备创建与渲染失效通知锁序相反。
+struct QkFacadeSharedGuard {
+    QkFacadeSharedGuard() { QkD3D11State::EnterShared(); }
+    ~QkFacadeSharedGuard() { QkD3D11State::LeaveShared(); }
+};
 #endif

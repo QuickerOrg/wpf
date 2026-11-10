@@ -330,6 +330,7 @@ CD3DSwapChain::ReleaseD3DResources()
     ReleaseInterface((*const_cast<IDirect3DSwapChain9Ex **>(&m_pD3DSwapChainEx)));
 
 #if QUICKER_WPF_D3D11_FACADE
+    m_facadePresentHistory.Reset();
     m_facadeSwapChain.Reset();
 #endif
     // Also release reference to wrapper resources for each of the back buffers.
@@ -428,6 +429,7 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
     m_facadeState->context->OMSetRenderTargets(0,nullptr,nullptr);
     HRESULT hr=m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
     if(FAILED(hr)) return FAILED(m_facadeState->DeviceStatus())?WGXERR_DISPLAYSTATEINVALID:hr;
+    m_facadePresentHistory.Reset();
     ReleaseInterface(m_rgBackBuffers[0]);
     hr=CD3DSurface::CreateFacade(manager,m_facadeState.Get(),width,height,D3DFMT_A8R8G8B8,&m_rgBackBuffers[0]);
     m_facadeFirstPresent=true;

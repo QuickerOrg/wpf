@@ -269,6 +269,12 @@ HRESULT CD3DDeviceManager::GetSWDevice(
     
     // Start a critical section to make sure we only create one device.
 
+    #if QUICKER_WPF_D3D11_FACADE
+
+    QkFacadeSharedGuard sharedGuard;
+
+    #endif
+
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
     IDirect3DDevice9 *pIDirect3DDevice = NULL;
@@ -374,6 +380,9 @@ Cleanup:
 //------------------------------------------------------------------------------
 void CD3DDeviceManager::IncCallers()
 {
+    #if QUICKER_WPF_D3D11_FACADE
+    QkFacadeSharedGuard sharedGuard;
+    #endif
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
     m_cCallers++;
@@ -390,6 +399,9 @@ void CD3DDeviceManager::IncCallers()
 //------------------------------------------------------------------------------
 void CD3DDeviceManager::DecCallers()
 {
+    #if QUICKER_WPF_D3D11_FACADE
+    QkFacadeSharedGuard sharedGuard;
+    #endif
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
     Assert(m_cCallers > 0);
@@ -547,6 +559,9 @@ CD3DDeviceManager::HandleDisplayChange(
     __in_ecount(1) CDisplaySet const * pNewDisplaySet
     )
 {
+    #if QUICKER_WPF_D3D11_FACADE
+    QkFacadeSharedGuard sharedGuard;
+    #endif
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
     //
@@ -725,6 +740,12 @@ CD3DDeviceManager::DoesWindowedHwDeviceExist(
     D3DDeviceCreationParameters oCreateParams;
     bool succeeded = false;
     HRESULT hr = S_OK;
+
+    #if QUICKER_WPF_D3D11_FACADE
+
+    QkFacadeSharedGuard sharedGuard;
+
+    #endif
 
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
@@ -927,6 +948,9 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
         pPresentParams->PresentationInterval=(dwFlags&MilRTInitialization::PresentImmediately)
             ?D3DPRESENT_INTERVAL_IMMEDIATE:D3DPRESENT_INTERVAL_ONE;
     }
+    #if QUICKER_WPF_D3D11_FACADE
+    QkFacadeSharedGuard sharedGuard;
+    #endif
     CGuard<CCriticalSection> guard(m_csManagement);
     if(pDisplay->DisplaySet()->DangerousHasDisplayStateChanged()) return WGXERR_DISPLAYSTATEINVALID;
     if(!m_pDisplaySet) { m_pDisplaySet=pDisplay->DisplaySet(); m_pDisplaySet->AddRef(); }
@@ -935,8 +959,17 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
     D3DDeviceCreationParameters params={};
     params.AdapterOrdinal=pDisplay->GetDisplayIndex(); params.MasterAdapterOrdinal=params.AdapterOrdinal;
     params.DeviceType=D3DDEVTYPE_HAL; params.NumberOfAdaptersInGroup=1; params.RTInitFlags=dwFlags;
-    HRESULT hr=GetAvailableDevice(&params,ppDeviceLevel1);
-    if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE reuse manager device\n"); return hr; }
+    HRESULT hr;
+    while(SUCCEEDED(hr=GetAvailableDevice(&params,ppDeviceLevel1))) {
+        // 同适配器兄弟窗口可能尚未进入 Present，但实际共享设备已移除。
+        // 在设备入口保护下退休旧包装，确保不会反复取回失效设备。
+        {
+            ENTER_DEVICE_FOR_SCOPE(**ppDeviceLevel1);
+            hr=(*ppDeviceLevel1)->CheckDeviceState(hwnd);
+        }
+        if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE reuse manager device\n"); return hr; }
+        ReleaseInterface(*ppDeviceLevel1);
+    }
     // 与 B 一样由 manager 记录可用/不可用分区、引用和失效通知；不按窗口创建设备。
     hr=m_rgDeviceList.ReserveSpace(1); if(FAILED(hr)) return hr;
 #if DBG
@@ -960,6 +993,12 @@ CD3DDeviceManager::GetD3DDeviceAndPresentParams(
     Assert(m_cCallers > 0);
 
     *ppDeviceLevel1 = NULL;
+
+    #if QUICKER_WPF_D3D11_FACADE
+
+    QkFacadeSharedGuard sharedGuard;
+
+    #endif
 
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
@@ -1146,6 +1185,9 @@ CD3DDeviceManager::UnusedNotification(
 {
     if (m_fD3DLoaded)
     {
+        #if QUICKER_WPF_D3D11_FACADE
+        QkFacadeSharedGuard sharedGuard;
+        #endif
         CGuard<CCriticalSection> oGuard(m_csManagement);
 
         CD3DDeviceLevel1 *pDeviceLevel1 = DYNCAST(CD3DDeviceLevel1, pUnused);
@@ -1258,6 +1300,12 @@ CD3DDeviceManager::UnusableNotification(
     )
 {
     Assert(m_fD3DLoaded);
+
+    #if QUICKER_WPF_D3D11_FACADE
+
+    QkFacadeSharedGuard sharedGuard;
+
+    #endif
 
     CGuard<CCriticalSection> oGuard(m_csManagement);
 
@@ -1865,6 +1913,9 @@ Cleanup:
 HRESULT 
 CD3DDeviceManager::AddAdapterStatusListener(__in IAdapterStatusListener *pListener)
 {
+    #if QUICKER_WPF_D3D11_FACADE
+    QkFacadeSharedGuard sharedGuard;
+    #endif
     CGuard<CCriticalSection> oGuard(m_csManagement);
     
     RRETURN(m_rgAdapterStatusListeners.Add(pListener));
@@ -1883,6 +1934,9 @@ CD3DDeviceManager::AddAdapterStatusListener(__in IAdapterStatusListener *pListen
 void 
 CD3DDeviceManager::RemoveAdapterStatusListener(__in IAdapterStatusListener *pListener)
 {
+    #if QUICKER_WPF_D3D11_FACADE
+    QkFacadeSharedGuard sharedGuard;
+    #endif
     CGuard<CCriticalSection> oGuard(m_csManagement);
         
     m_rgAdapterStatusListeners.Remove(pListener);
