@@ -164,6 +164,7 @@ public:
     static void EnterState(QkD3D11State *state);
     static void LeaveState();
     static void TrimIfIdle();
+    static void RetireMediaTexture(QkTextureHandle *texture);
     ComPtr<ID3DDeviceContextState> savedContext;
     ComPtr<ID3D11DeviceContext1> context1;
     HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out);

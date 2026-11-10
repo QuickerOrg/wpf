@@ -6500,7 +6500,9 @@ CD3DDeviceLevel1::DrawVideoToSurface(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    return QkFacadeUnimpl("CD3DDeviceLevel1::DrawVideoToSurface");
+    // MF presenter 已返回门面 GPU 位图，沿用原 BeginRender/EndRender 配对契约。
+    AssertDeviceEntry(*this);
+    return HandleDIE(pSurfaceRenderer->BeginRender(this, ppBitmapSource));
 #else
 
     HRESULT hr = S_OK;

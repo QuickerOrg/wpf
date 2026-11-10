@@ -151,6 +151,28 @@ void QkD3D11State::LeaveState() {
     auto prior=qkEntryStack.back(); qkEntryStack.pop_back();
     if(prior) { prior->Activate(); prior->Release(); }
 }
+void QkD3D11State::RetireMediaTexture(QkTextureHandle *texture)
+{
+    QkFacadeSharedGuard guard;
+    // 关闭媒体时解除最后一帧的门面绑定及保存的上下文引用，避免等待其它窗口绘制才回收。
+    for (auto state : qkSharedStates) {
+        bool entered = false;
+        for (UINT slot = 0; slot < ARRAYSIZE(state->m_textures); ++slot) {
+            if (state->m_textures[slot].Get() != texture) continue;
+            if (!entered) { EnterState(state); entered = true; }
+            state->m_textures[slot].Reset();
+            ID3D11ShaderResourceView *empty = nullptr;
+            state->context->PSSetShaderResources(slot, 1, &empty);
+        }
+        if (entered) {
+            ComPtr<ID3DDeviceContextState> clean;
+            state->context1->SwapDeviceContextState(nullptr, &clean);
+            state->context1->SwapDeviceContextState(clean.Get(), nullptr);
+            state->savedContext = clean;
+            LeaveState();
+        }
+    }
+}
 QkD3D11State::~QkD3D11State() {
     EnterShared();
     auto active=qkActiveStates.find(context.Get());
@@ -235,7 +257,7 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
     if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
     hr = D3D11CreateDevice(selected.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
         &state->device, &state->featureLevel, &state->context);
     if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
     char account[400]; StringCchPrintfA(account,400,"{\"event\":\"device-create\",\"device\":\"%p\",\"monitor\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu,\"hr\":%ld}\n",state->device.Get(),monitor,static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage),hr); QkAccountEvent(account);

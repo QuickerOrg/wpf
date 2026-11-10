@@ -398,6 +398,13 @@ CD3DSwapChain::ReleaseDC(
 
 
 #if QUICKER_WPF_D3D11_FACADE
+// 仅本进程的确定性故障注入，用于复验健康设备的呈现恢复分支；不影响系统设备。
+static bool QkPresentDenial(const WCHAR *phase)
+{
+    WCHAR value[16] = {};
+    return GetEnvironmentVariableW(L"QUICKER_FACADE_EXPERIMENT_PRESENT_DENIAL", value, ARRAYSIZE(value))
+        && _wcsicmp(value, phase) == 0;
+}
 HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,D3DFORMAT format,CD3DSwapChain **out,HWND opaqueHwnd)
 {
     *out=nullptr; CD3DSwapChain *s=new(1) CD3DSwapChain(nullptr,1,nullptr); if(!s) return E_OUTOFMEMORY;
@@ -415,7 +422,7 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
         desc.BufferCount=2; desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         desc.Scaling=DXGI_SCALING_STRETCH; desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
         // WPF 保留目标独立于轮换的 DXGI 后缓冲，局部更新只做 GPU 拷贝。
-        if(SUCCEEDED(hr)) hr=factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain);
+        if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Create") ? E_ACCESSDENIED : factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain);
         if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
         if(hr==E_ACCESSDENIED && SUCCEEDED(state->DeviceStatus())) {
             // 旧 flip 的延迟销毁或多个显示目标关联同 HWND 时，不能让整窗转成 CPU 光栅化。
@@ -436,7 +443,8 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
     // 原 UpdateFlippingChain 已释放目标表面；没有任何跨帧 DXGI buffer/view 引用。
     m_facadeState->context->OMSetRenderTargets(0,nullptr,nullptr);
     LONGLONG resizeStarted=QkFacadeClock();
-    HRESULT hr=m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
+    // 已恢复为 GPU→GDI 的目标继续复用该呈现方式，resize/最小化恢复不再反复争用 HWND 的 flip 关联。
+    HRESULT hr=m_facadeGdiPresent ? S_OK : QkPresentDenial(L"Resize") ? E_ACCESSDENIED : m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
     QkFacadeTiming("ResizeBuffers",resizeStarted,hr,width);
     if(FAILED(hr) && FAILED(m_facadeState->DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
     if(hr==E_ACCESSDENIED) {
@@ -455,7 +463,7 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
             desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
             desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.Scaling=DXGI_SCALING_STRETCH;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
             LONGLONG recreateStarted=QkFacadeClock();
-            if(SUCCEEDED(hr)) hr=factory->CreateSwapChainForHwnd(m_facadeState->device.Get(),oldDesc.OutputWindow,&desc,nullptr,nullptr,&m_facadeSwapChain);
+            if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Resize") ? E_ACCESSDENIED : factory->CreateSwapChainForHwnd(m_facadeState->device.Get(),oldDesc.OutputWindow,&desc,nullptr,nullptr,&m_facadeSwapChain);
             if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(oldDesc.OutputWindow,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
             QkFacadeTiming("ResizeRecreate",recreateStarted,hr,width);
             char line[192]; StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE resize-recreate hwnd=%p hr=0x%08x\n",oldDesc.OutputWindow,hr);QkFacadeTrace(line);

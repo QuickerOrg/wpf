@@ -279,12 +279,12 @@ CHwHWNDRenderTarget::UpdateFlippingChain(
     }
 
 #if QUICKER_WPF_D3D11_FACADE
-    if ((!uWidth || !uHeight) && m_pD3DSwapChain && m_pD3DSwapChain->m_facadeSwapChain) {
+    if ((!uWidth || !uHeight) && m_pD3DSwapChain && (m_pD3DSwapChain->m_facadeSwapChain || m_pD3DSwapChain->m_facadeGdiPresent)) {
         // 最小化不重新关联 HWND；flip 每个 HWND 只能有一条存活交换链。
         m_fEnableRendering=FALSE;
         goto Cleanup;
     }
-    if (uWidth && uHeight && m_pD3DSwapChain && m_pD3DSwapChain->m_facadeSwapChain &&
+    if (uWidth && uHeight && m_pD3DSwapChain && (m_pD3DSwapChain->m_facadeSwapChain || m_pD3DSwapChain->m_facadeGdiPresent) &&
         !(GetWindowLongPtrW(m_MILDC.GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED))
     {
         IFCSUB1(m_pD3DSwapChain->ResizeFacade(m_pD3DDevice->GetResourceManager(),uWidth,uHeight));

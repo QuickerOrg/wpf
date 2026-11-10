@@ -20,6 +20,9 @@
 
 #include "precomp.hpp"
 #include "milav.tmh"
+#if QUICKER_WPF_D3D11_FACADE
+#include "facademedia.inl"
+#endif
 
 //+-----------------------------------------------------------------------------
 //
@@ -110,6 +113,11 @@ ChoosePlayer(
     __deref_out     IMILMedia           **ppMedia
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    // .NET Core 的 MediaPlayer 固定传 true；不把旧受限调用静默升级为任意媒体权限。
+    if (!canOpenAnyMedia) { *ppMedia = nullptr; return E_ACCESSDENIED; }
+    return QkMediaPlayer::Create(pMediaInstance, ppMedia);
+#else
     HRESULT hr = S_OK;
     TRACEFID(pMediaInstance->GetID(), &hr);
     CWmpPlayer      *pRealAvPlayer = NULL;
@@ -267,5 +275,6 @@ Cleanup:
     ReleaseInterface(pRealAvPlayer);
 
     RRETURN(hr);
+#endif
 }
 
