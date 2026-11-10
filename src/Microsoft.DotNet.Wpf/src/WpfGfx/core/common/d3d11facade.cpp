@@ -9,6 +9,20 @@
 #include <psapi.h>
 #include <dxgi1_4.h>
 
+LONGLONG QkFacadeClock() { LARGE_INTEGER value; QueryPerformanceCounter(&value); return value.QuadPart; }
+void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail)
+{
+    WCHAR path[32768]; DWORD n=GetEnvironmentVariableW(L"QUICKER_FACADE_TIMING",path,ARRAYSIZE(path));
+    if(!n || n>=ARRAYSIZE(path)) return;
+    LONGLONG end=QkFacadeClock(); LARGE_INTEGER frequency; QueryPerformanceFrequency(&frequency);
+    char line[320]; StringCchPrintfA(line,ARRAYSIZE(line),
+        "{\"name\":\"%s\",\"start\":%lld,\"ms\":%.6f,\"hr\":%ld,\"detail\":%u,\"thread\":%lu}\n",
+        name,start,(end-start)*1000.0/frequency.QuadPart,result,detail,GetCurrentThreadId());
+    HANDLE file=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE) return;
+    DWORD written; WriteFile(file,line,static_cast<DWORD>(strlen(line)),&written,nullptr);CloseHandle(file);
+}
+
 void QkFacadeTrace(const char *line)
 {
     OutputDebugStringA(line);
@@ -399,6 +413,7 @@ HRESULT QkD3D11State::RecordPresent()
 }
 HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
 {
+    LONGLONG started=QkFacadeClock();
     *count = 0;
     while (!m_presentQueries.empty())
     {
@@ -412,7 +427,8 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
     // 与原 WPF GPU marker 同一含义：尚未完成的真实 GPU 命令队列，非 DWM 扫描输出队列。
     // PresentCount 可能跳帧，不能用 submitted-displayed 的差伪造排队数。
     *count=static_cast<UINT>(m_presentQueries.size());
-    return DeviceStatus();
+    HRESULT status=DeviceStatus(); QkFacadeTiming("GetNumQueuedPresents",started,status,*count);
+    return status;
 }
 HRESULT QkD3D11State::WaitForVBlank()
 {
@@ -426,7 +442,9 @@ HRESULT QkD3D11State::WaitForVBlank()
         if(FAILED(hr)) return WGXERR_NO_HARDWARE_DEVICE;
         DXGI_OUTPUT_DESC desc={};
         if(SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor==m_monitor) {
+            LONGLONG started=QkFacadeClock();
             hr=output->WaitForVBlank();
+            QkFacadeTiming("WaitForVBlank",started,hr);
             return SUCCEEDED(hr)?S_OK:WGXERR_NO_HARDWARE_DEVICE;
         }
     }

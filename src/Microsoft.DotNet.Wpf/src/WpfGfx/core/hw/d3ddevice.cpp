@@ -3457,8 +3457,10 @@ CD3DDeviceLevel1::Present(
             dirty.clear(); // 提交完整显示历史，不能读取 flip 轮换缓冲的旧内容。
         }
         DXGI_PRESENT_PARAMETERS params={}; params.DirtyRectsCount=static_cast<UINT>(dirty.size()); params.pDirtyRects=dirty.empty()?nullptr:dirty.data();
+        LONGLONG presentStarted=QkFacadeClock();
         hr=pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
             (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params);
+        QkFacadeTiming("Present1",presentStarted,hr,pD3DSwapChain->m_facadeSyncInterval);
         if(hr==DXGI_STATUS_OCCLUDED) {
             // 原 WDDM 普通窗口策略：短暂退让、通知 UI 重验窗口，保持后续渲染可恢复。
             Sleep(100); PostMessage(hwnd,m_presentFailureWindowMessage,0,0); return S_OK;
@@ -3890,7 +3892,9 @@ CD3DDeviceLevel1::PresentWithGDI(
         UPDATELAYEREDWINDOWINFO info={}; info.cbSize=sizeof(info);
         info.pptDst=&pMILDC->GetPosition(); info.psize=&size; info.hdcSrc=dc; info.pptSrc=&src;
         info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=pMILDC->GetULWFlags();
+        LONGLONG ulwStarted=QkFacadeClock();
         hr=UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError());
+        QkFacadeTiming("UpdateLayeredWindowIndirect",ulwStarted,hr);
         HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr))hr=release;
         *pfPresentProcessed=SUCCEEDED(hr);
         if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE Present ULW\n"); hr=m_facade->RecordPresent(); }

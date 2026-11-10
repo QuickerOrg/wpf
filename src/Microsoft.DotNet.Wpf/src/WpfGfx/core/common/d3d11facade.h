@@ -13,6 +13,9 @@
 // WPF 内部执行对象；不实现任何 D3D9 COM 接口。
 HRESULT QkFacadeUnimpl(const char *name);
 void QkFacadeTrace(const char *line);
+// 默认关闭的呈现边界计时；只测原生调用，不改 WPF 调度算法。
+LONGLONG QkFacadeClock();
+void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail = 0);
 // 默认关闭；私有数据令牌跟随实际 D3D 对象销毁，统计逻辑字节而非驱动物理分配。
 void QkAccount(ID3D11DeviceChild *object, const char *kind, ULONGLONG bytes = 0);
 void QkAccountEvent(const char *event);

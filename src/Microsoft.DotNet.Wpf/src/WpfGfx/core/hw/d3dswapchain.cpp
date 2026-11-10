@@ -428,8 +428,33 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
 {
     // 原 UpdateFlippingChain 已释放目标表面；没有任何跨帧 DXGI buffer/view 引用。
     m_facadeState->context->OMSetRenderTargets(0,nullptr,nullptr);
+    LONGLONG resizeStarted=QkFacadeClock();
     HRESULT hr=m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
-    if(FAILED(hr)) return FAILED(m_facadeState->DeviceStatus())?WGXERR_DISPLAYSTATEINVALID:hr;
+    QkFacadeTiming("ResizeBuffers",resizeStarted,hr,width);
+    if(FAILED(hr) && FAILED(m_facadeState->DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+    if(hr==E_ACCESSDENIED) {
+        // HWND 透明/不透明切换后，旧 flip 绑定可能已失效；健康设备只做一次解除绑定并重建。
+        // 不能把该局部交换链错误直接交给 WPF，导致整个 HWND 静默退回软件。
+        DXGI_SWAP_CHAIN_DESC oldDesc={};
+        HRESULT query=m_facadeSwapChain->GetDesc(&oldDesc);
+        if(SUCCEEDED(query) && IsWindow(oldDesc.OutputWindow)) {
+            DetachFacade();
+            ComPtr<IDXGIDevice> device; ComPtr<IDXGIAdapter> adapter; ComPtr<IDXGIFactory2> factory;
+            hr=m_facadeState->device.As(&device);
+            if(SUCCEEDED(hr)) hr=device->GetAdapter(&adapter);
+            if(SUCCEEDED(hr)) hr=adapter->GetParent(IID_PPV_ARGS(&factory));
+            DXGI_SWAP_CHAIN_DESC1 desc={}; desc.Width=width; desc.Height=height;
+            desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.SampleDesc.Count=1;
+            desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
+            desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.Scaling=DXGI_SCALING_STRETCH;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
+            LONGLONG recreateStarted=QkFacadeClock();
+            if(SUCCEEDED(hr)) hr=factory->CreateSwapChainForHwnd(m_facadeState->device.Get(),oldDesc.OutputWindow,&desc,nullptr,nullptr,&m_facadeSwapChain);
+            if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(oldDesc.OutputWindow,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
+            QkFacadeTiming("ResizeRecreate",recreateStarted,hr,width);
+            char line[192]; StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE resize-recreate hwnd=%p hr=0x%08x\n",oldDesc.OutputWindow,hr);QkFacadeTrace(line);
+        }
+    }
+    if(FAILED(hr)) return hr;
     m_facadePresentHistory.Reset();
     D3DFORMAT format=m_rgBackBuffers[0]->Desc().Format;
     ReleaseInterface(m_rgBackBuffers[0]);
