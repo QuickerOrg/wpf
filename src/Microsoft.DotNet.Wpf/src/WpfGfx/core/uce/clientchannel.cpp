@@ -27,6 +27,11 @@
 
 #include "precomp.hpp"
 
+#if QUICKER_WPF_D3D11_FACADE
+extern LONGLONG QkFacadeClock();
+extern void QkFacadeTiming(const char *, LONGLONG, HRESULT, UINT);
+#endif
+
 #if PRERELEASE
 //
 // When enabled, the back channel fuzzer will flip a random bit in the incoming
@@ -970,6 +975,11 @@ CMilChannel::PeekNextMessage(
 
     m_csQueue.Leave();
 
+#if QUICKER_WPF_D3D11_FACADE
+    // 托管端只请求消息布局的公共前缀；类型字段存在即可记录接收，不能要求整个原生 union。
+    if (*pfMessageRetrieved && cbSize >= sizeof(pmsg->type) && pmsg->type == MilMessageClass::Presented)
+        QkFacadeTiming("present-receive", QkFacadeClock(), S_OK, (UINT)(UINT_PTR)GetChannel());
+#endif
     return S_OK;
 }
 

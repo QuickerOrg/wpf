@@ -471,6 +471,7 @@ HRESULT QkD3D11State::WaitForVBlank()
         DXGI_OUTPUT_DESC desc={};
         if(SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor==m_monitor) {
             LONGLONG started=QkFacadeClock();
+            QkFacadeTiming("WaitForVBlank-enter",started,S_OK);
             hr=output->WaitForVBlank();
             QkFacadeTiming("WaitForVBlank",started,hr);
             return SUCCEEDED(hr)?S_OK:WGXERR_NO_HARDWARE_DEVICE;

@@ -11,6 +11,11 @@
 
 #include "precomp.hpp"
 
+#if QUICKER_WPF_D3D11_FACADE
+extern LONGLONG QkFacadeClock();
+extern void QkFacadeTiming(const char *, LONGLONG, HRESULT, UINT);
+#endif
+
 #if PRERELEASE
 //
 // One of the requirements for the composition engine is to be able to accept
@@ -978,6 +983,16 @@ CComposition::Present(
 
     if (m_deviceState == MilCompositionDeviceState::Occluded)
     {
+#if QUICKER_WPF_D3D11_FACADE
+        // flip 的遮挡状态可延续到新 HWND 创建。此时 UI 的同步 CompleteRender
+        // 正在等一次性应答；直接退出会把订阅留在已休眠的分区，双方永久等待。
+        // 没有发生呈现，按既有 NoPresent 协议应答，不伪造已显示或修改托管时钟。
+        if (m_rgpPresentTimeListeners.GetCount() != 0)
+        {
+            QkFacadeTiming("present-occluded-ack", QkFacadeClock(), S_OK, m_rgpPresentTimeListeners.GetCount());
+            NotifyPresentListeners(MilPresentationResults::NoPresent, 0, 0);
+        }
+#endif
         hr = S_PRESENT_OCCLUDED;
         goto Cleanup;
     }
@@ -1691,7 +1706,14 @@ HRESULT CComposition::Partition_NotifyPresent(
 
     notifyInfo.pChannel = pChannel;
     RtlCopyMemory(&notifyInfo.qpcFrameTime, &(pCmd->FrameTime), sizeof(QPC_TIME));
+#if QUICKER_WPF_D3D11_FACADE
+    // 只记录门面实验的订阅边界；不改变一次性应答和托管调度协议。
+    HRESULT hr = m_rgpPresentTimeListeners.Add(notifyInfo);
+    QkFacadeTiming("present-subscribe", QkFacadeClock(), hr, (UINT)(UINT_PTR)pChannel->GetChannel());
+    RRETURN(hr);
+#else
     RRETURN(m_rgpPresentTimeListeners.Add(notifyInfo));
+#endif
 }
 
 
@@ -2406,7 +2428,14 @@ CComposition::NotifyPresentListeners(
 
         for (UINT channel = 0; channel < nListenerCount; channel++)
         {
+#if QUICKER_WPF_D3D11_FACADE
+            HRESULT postHr = m_rgpPresentTimeListeners[channel].pChannel->PostMessageToChannel(&message);
+            QkFacadeTiming(ePresentationResults == MilPresentationResults::NoPresent ? "present-notify-none" : "present-notify",
+                QkFacadeClock(), postHr, (UINT)(UINT_PTR)m_rgpPresentTimeListeners[channel].pChannel->GetChannel());
+            MIL_THR(postHr);
+#else
             MIL_THR(m_rgpPresentTimeListeners[channel].pChannel->PostMessageToChannel(&message));
+#endif
         }
 
         //
