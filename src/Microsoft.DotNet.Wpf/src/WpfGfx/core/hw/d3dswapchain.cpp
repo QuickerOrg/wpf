@@ -216,6 +216,9 @@ CD3DSwapChain::CD3DSwapChain(
 //-----------------------------------------------------------------------------
 CD3DSwapChain::~CD3DSwapChain()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if(m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainRelease);
+#endif
     for (UINT i = 0; i < m_cBackBuffers; i++)
     {
         ReleaseInterfaceNoNULL(m_rgBackBuffers[i]);
@@ -423,9 +426,11 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
         desc.Scaling=DXGI_SCALING_STRETCH; desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
         // WPF 保留目标独立于轮换的 DXGI 后缓冲，局部更新只做 GPU 拷贝。
         if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Create") ? E_ACCESSDENIED : factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain);
+        if(s->m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainCreate);
         if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
         if(hr==E_ACCESSDENIED && SUCCEEDED(state->DeviceStatus())) {
             // 旧 flip 的延迟销毁或多个显示目标关联同 HWND 时，不能让整窗转成 CPU 光栅化。
+            if(s->m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainRelease);
             s->m_facadeSwapChain.Reset(); state->context->Flush();
             s->m_facadeGdiPresent=true;
             QkFacadeTrace("QK-FACADE fallback=GPU-GDI reason=flip-access-denied\n");
@@ -440,11 +445,30 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
 }
 HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT height)
 {
+    QkFacadeCount(QkFacadeCounter::SwapChainResizeRequest);
+    if(!m_facadeResizeRequired && !QkPresentDenial(L"Resize") && m_rgBackBuffers[0] &&
+        m_rgBackBuffers[0]->Desc().Width==width && m_rgBackBuffers[0]->Desc().Height==height &&
+        SUCCEEDED(m_facadeState->DeviceStatus())) {
+        // 同尺寸更新仍按原约定使内容失效、清空显示历史并完整呈现；仅保留交换链、逻辑纹理和视图。
+        // 非法 Present 的恢复及显式故障注入必须继续走原 resize/recreate 分支。
+        m_facadePresentHistory.Reset();
+        m_facadeFirstPresent=true;
+        if(m_rgBackBuffers[0]->Desc().Format==D3DFMT_X8R8G8B8) {
+            const float opaqueBlack[4]={0,0,0,1};
+            m_facadeState->context->ClearRenderTargetView(m_rgBackBuffers[0]->m_facadeRTV.Get(),opaqueBlack);
+        }
+        QkFacadeCount(QkFacadeCounter::SwapChainReuse);
+        return S_OK;
+    }
     // 原 UpdateFlippingChain 已释放目标表面；没有任何跨帧 DXGI buffer/view 引用。
     m_facadeState->context->OMSetRenderTargets(0,nullptr,nullptr);
     LONGLONG resizeStarted=QkFacadeClock();
     // 已恢复为 GPU→GDI 的目标继续复用该呈现方式，resize/最小化恢复不再反复争用 HWND 的 flip 关联。
-    HRESULT hr=m_facadeGdiPresent ? S_OK : QkPresentDenial(L"Resize") ? E_ACCESSDENIED : m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0);
+    HRESULT hr=S_OK;
+    if(!m_facadeGdiPresent) {
+        if(QkPresentDenial(L"Resize")) hr=E_ACCESSDENIED;
+        else { QkFacadeCount(QkFacadeCounter::SwapChainResize); hr=m_facadeSwapChain->ResizeBuffers(2,width,height,DXGI_FORMAT_UNKNOWN,0); }
+    }
     QkFacadeTiming("ResizeBuffers",resizeStarted,hr,width);
     if(FAILED(hr) && FAILED(m_facadeState->DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
     if(hr==E_ACCESSDENIED) {
@@ -464,6 +488,7 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
             desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.Scaling=DXGI_SCALING_STRETCH;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
             LONGLONG recreateStarted=QkFacadeClock();
             if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Resize") ? E_ACCESSDENIED : factory->CreateSwapChainForHwnd(m_facadeState->device.Get(),oldDesc.OutputWindow,&desc,nullptr,nullptr,&m_facadeSwapChain);
+            if(m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainCreate);
             if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(oldDesc.OutputWindow,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
             QkFacadeTiming("ResizeRecreate",recreateStarted,hr,width);
             char line[192]; StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE resize-recreate hwnd=%p hr=0x%08x\n",oldDesc.OutputWindow,hr);QkFacadeTrace(line);
@@ -480,6 +505,7 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
     ReleaseInterface(m_rgBackBuffers[0]);
     hr=CD3DSurface::CreateFacade(manager,m_facadeState.Get(),width,height,format,&m_rgBackBuffers[0]);
     m_facadeFirstPresent=true;
+    if(SUCCEEDED(hr)) m_facadeResizeRequired=false;
     return hr;
 }
 #endif

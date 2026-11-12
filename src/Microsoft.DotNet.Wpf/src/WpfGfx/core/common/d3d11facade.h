@@ -16,6 +16,26 @@ void QkFacadeTrace(const char *line);
 // 默认关闭的呈现边界计时；只测原生调用，不改 WPF 调度算法。
 LONGLONG QkFacadeClock();
 void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail = 0);
+// S5h 聚合计数默认关闭；启用时只做原子累加，由实验夹具在计时边界外读取，不逐帧写文件。
+#define QK_FACADE_COUNTER_LIST(X) \
+    X(PresentAttempt,"present.attempt") X(PresentFlip,"present.flip") X(PresentUlw,"present.ulw") X(PresentGpuGdi,"present.gpu-gdi") \
+    X(GetDC,"get-dc") X(Readback,"readback") X(ReadbackBytes,"readback.bytes") \
+    X(SwapChainCreate,"swapchain.create") X(SwapChainRelease,"swapchain.release") X(SwapChainResizeRequest,"swapchain.resize-request") X(SwapChainResize,"swapchain.resize") X(SwapChainReuse,"swapchain.same-size-reuse") \
+    X(ResourceCreate,"resource.create") X(ResourceRelease,"resource.release") \
+    X(TextureCreate,"texture.create") X(TextureRelease,"texture.release") X(ShaderCreate,"shader.create") X(ShaderRelease,"shader.release") \
+    X(StateCreate,"state.create") X(StateRelease,"state.release") X(BufferCreate,"buffer.create") X(BufferRelease,"buffer.release") \
+    X(QueryCreate,"query.create") X(QueryRelease,"query.release") X(ViewCreate,"view.create") X(ViewRelease,"view.release") \
+    X(WaitForVBlank,"wait-for-vblank") X(OutputLookup,"wait-for-vblank.output-lookup") \
+    X(ShaderConvert,"shader.convert") X(ShaderCompile,"shader.compile") X(ShaderCacheHit,"shader.cache-hit") X(ShaderCacheMiss,"shader.cache-miss") \
+    X(FixedSourceBuild,"shader.fixed-source-build") X(FixedVertexCacheHit,"shader.fixed-vs-cache-hit")
+enum class QkFacadeCounter {
+#define QK_COUNTER_ENUM(name, label) name,
+    QK_FACADE_COUNTER_LIST(QK_COUNTER_ENUM)
+#undef QK_COUNTER_ENUM
+    Count
+};
+bool QkFacadeCountersEnabled();
+void QkFacadeCount(QkFacadeCounter counter, ULONGLONG amount = 1);
 // 默认关闭；私有数据令牌跟随实际 D3D 对象销毁，统计逻辑字节而非驱动物理分配。
 void QkAccount(ID3D11DeviceChild *object, const char *kind, ULONGLONG bytes = 0);
 void QkAccountEvent(const char *event);
@@ -139,6 +159,8 @@ class QkD3D11State
     ComPtr<QkFacadeShader> m_boundVS, m_boundPS;
     ComPtr<QkTextureHandle> m_textures[8];
     std::map<std::string,ComPtr<QkFacadeShader>> m_shaderCache;
+    // 显式 PS 配固定功能 VS 时，VS 源只依赖纹理坐标数量，最多九个条目；布局仍按原 FVF 单独缓存。
+    std::map<UINT,ComPtr<QkFacadeShader>> m_fixedVertexShaders;
     std::map<std::string,ComPtr<ID3D11SamplerState>> m_samplerCache;
     HRESULT Apply();
     HRESULT ApplyShaders();

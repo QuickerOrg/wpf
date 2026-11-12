@@ -226,6 +226,7 @@ CD3DSurface::GetDC(
 {
 #if QUICKER_WPF_D3D11_FACADE
     *phdc=nullptr; auto state=Device().Facade();
+    QkFacadeCount(QkFacadeCounter::GetDC);
     state->context->OMSetRenderTargets(0,nullptr,nullptr);
     return m_facadeGDI->GetDC(FALSE,phdc);
 #else
@@ -541,6 +542,7 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     else hr=state->device->CreateTexture2D(&td,nullptr,&s->m_facadeTexture);
     if(SUCCEEDED(hr)) QkAccount(s->m_facadeTexture.Get(),backBuffer?"DXGI-backbuffer":"GDI-compatible",static_cast<ULONGLONG>(width)*height*4);
     if(SUCCEEDED(hr)) hr=state->device->CreateRenderTargetView(s->m_facadeTexture.Get(),nullptr,&s->m_facadeRTV);
+    if(SUCCEEDED(hr)) QkAccount(s->m_facadeRTV.Get(),"RTV");
     if(SUCCEEDED(hr) && format==D3DFMT_X8R8G8B8) {
         // D3D9 XRGB 读取 Alpha 为 1，且任何绘图均不能改变它。
         const float opaqueBlack[4]={0,0,0,1}; state->context->ClearRenderTargetView(s->m_facadeRTV.Get(),opaqueBlack);
@@ -554,6 +556,7 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     handle->texture=s->m_facadeTexture; handle->rtv=s->m_facadeRTV; handle->context=state->context;
     handle->desc=s->m_d3dsd; handle->generation=state->generation;
     hr=state->device->CreateShaderResourceView(handle->texture.Get(),nullptr,&handle->srv);
+    if(SUCCEEDED(hr)) QkAccount(handle->srv.Get(),"SRV");
     if(FAILED(hr)) { s->Release(); return hr; }
     QkFacadeTrace("QK-FACADE create render-target surface\n");
     s->CD3DResource::Init(manager,width*height*4); *out=s; return S_OK;

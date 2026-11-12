@@ -57,12 +57,14 @@ public:
     void DetachFacade() {
         // HWND 的交换链不可等资源缓存淘汰后才释放，否则样式切换重建会重复关联。
         m_facadePresentHistory.Reset();
+        if(m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainRelease);
         m_facadeSwapChain.Reset();
         if(m_facadeState) m_facadeState->context->Flush();
     }
     bool m_facadeGdiPresent = false; // flip 被 HWND 关联拒绝时，仅呈现搬运降级，仍由 D3D11 绘制。
     UINT m_facadeSyncInterval = 0;
     mutable bool m_facadeFirstPresent = true;
+    mutable bool m_facadeResizeRequired = false;
     HRESULT ResizeFacade(CD3DResourceManager *manager, UINT width, UINT height);
 #endif
 

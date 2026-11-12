@@ -10,6 +10,7 @@
 #include <dxgi1_4.h>
 
 LONGLONG QkFacadeClock() { LARGE_INTEGER value; QueryPerformanceCounter(&value); return value.QuadPart; }
+#include "d3d11facade-counters.inl"
 void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail)
 {
     WCHAR path[32768]; DWORD n=GetEnvironmentVariableW(L"QUICKER_FACADE_TIMING",path,ARRAYSIZE(path));
@@ -52,7 +53,9 @@ class QkAccountToken : public IUnknown
     LONG refs=1;
 public:
     const char *kind; ULONGLONG bytes; void *object; void *device;
-    void Write(int delta) { char line[320]; StringCchPrintfA(line,320,
+    void Write(int delta) { QkCountResource(kind,delta);
+        WCHAR path[2]; if(!GetEnvironmentVariableW(L"QUICKER_FACADE_ACCOUNT",path,ARRAYSIZE(path))) return;
+        char line[320]; StringCchPrintfA(line,320,
         "{\"event\":\"resource\",\"object\":\"%p\",\"device\":\"%p\",\"kind\":\"%s\",\"bytes\":%llu,\"delta\":%d}\n",object,device,kind,bytes,delta); QkAccountEvent(line); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void **out) override { *out=nullptr; if(iid!=__uuidof(IUnknown)) return E_NOINTERFACE; *out=this; AddRef(); return S_OK; }
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
@@ -60,7 +63,7 @@ public:
 };
 void QkAccount(ID3D11DeviceChild *object,const char *kind,ULONGLONG bytes)
 {
-    WCHAR path[2]; if(!object || !GetEnvironmentVariableW(L"QUICKER_FACADE_ACCOUNT",path,2)) return;
+    WCHAR path[2]; if(!object || (!GetEnvironmentVariableW(L"QUICKER_FACADE_ACCOUNT",path,2) && !QkFacadeCountersEnabled())) return;
     UINT size=0; object->GetPrivateData(QkAccountGuid,&size,nullptr); if(size) return;
     auto token=new QkAccountToken; token->kind=kind; token->bytes=bytes; token->object=object;
     ID3D11Device *device=nullptr; object->GetDevice(&device); token->device=device; device->Release();
@@ -454,6 +457,7 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
 }
 HRESULT QkD3D11State::WaitForVBlank()
 {
+    QkFacadeCount(QkFacadeCounter::WaitForVBlank);
     // 默认关闭的诊断候选：借用 WPF 已有的无硬件 vblank 调度回退，不改托管时钟。
     WCHAR option[2]={};
     if(GetEnvironmentVariableW(L"QUICKER_FACADE_NO_VBLANK_WAIT",option,ARRAYSIZE(option))==1 && option[0]==L'1') {
@@ -461,6 +465,7 @@ HRESULT QkD3D11State::WaitForVBlank()
         return WGXERR_NO_HARDWARE_DEVICE;
     }
     ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
+    QkFacadeCount(QkFacadeCounter::OutputLookup);
     HRESULT hr=device.As(&dxgi);
     if(SUCCEEDED(hr)) hr=dxgi->GetAdapter(&adapter);
     if(FAILED(hr)) return WGXERR_NO_HARDWARE_DEVICE;

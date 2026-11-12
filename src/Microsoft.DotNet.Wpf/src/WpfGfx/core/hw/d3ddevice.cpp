@@ -3376,6 +3376,7 @@ CD3DDeviceLevel1::Present(
 {
 #if QUICKER_WPF_D3D11_FACADE
     m_facade->ExperimentRemoval();
+    QkFacadeCount(QkFacadeCounter::PresentAttempt);
     if (FAILED(m_hrDisplayInvalid) || FAILED(m_facade->DeviceStatus())) {
         MarkUnusable(false);
         return WGXERR_DISPLAYSTATEINVALID;
@@ -3473,10 +3474,11 @@ CD3DDeviceLevel1::Present(
             MarkUnusable(false);
             return WGXERR_DISPLAYSTATEINVALID;
         }
-        if(hr==DXGI_ERROR_INVALID_CALL) return WGXERR_NEED_RECREATE_AND_PRESENT;
+        if(hr==DXGI_ERROR_INVALID_CALL) { pD3DSwapChain->m_facadeResizeRequired=true; return WGXERR_NEED_RECREATE_AND_PRESENT; }
         if(hr==DXGI_ERROR_WAS_STILL_DRAWING) return D3DERR_WASSTILLDRAWING;
         if(FAILED(hr)) return hr;
         pD3DSwapChain->m_facadeFirstPresent=false;
+        QkFacadeCount(QkFacadeCounter::PresentFlip);
         QkFacadeTrace(dirty.empty()?"QK-FACADE Present DXGI flip full\n":"QK-FACADE Present DXGI flip dirty\n");
         return m_facade->RecordPresent();
     }
@@ -3897,7 +3899,7 @@ CD3DDeviceLevel1::PresentWithGDI(
             QkFacadeTiming("GpuGdiPresent",started,hr);
             HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr)) hr=release;
             surface->Release(); *pfPresentProcessed=SUCCEEDED(hr);
-            if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE Present GPU-GDI\n"); hr=m_facade->RecordPresent(); }
+            if(SUCCEEDED(hr)) { QkFacadeCount(QkFacadeCounter::PresentGpuGdi); QkFacadeTrace("QK-FACADE Present GPU-GDI\n"); hr=m_facade->RecordPresent(); }
             return hr;
         }
         SIZE size={static_cast<LONG>(surface->Desc().Width),static_cast<LONG>(surface->Desc().Height)};
@@ -3911,7 +3913,7 @@ CD3DDeviceLevel1::PresentWithGDI(
         QkFacadeTiming("UpdateLayeredWindowIndirect",ulwStarted,hr);
         HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr))hr=release;
         *pfPresentProcessed=SUCCEEDED(hr);
-        if(SUCCEEDED(hr)) { QkFacadeTrace("QK-FACADE Present ULW\n"); hr=m_facade->RecordPresent(); }
+        if(SUCCEEDED(hr)) { QkFacadeCount(QkFacadeCounter::PresentUlw); QkFacadeTrace("QK-FACADE Present ULW\n"); hr=m_facade->RecordPresent(); }
     }
     surface->Release(); return hr;
 #else
