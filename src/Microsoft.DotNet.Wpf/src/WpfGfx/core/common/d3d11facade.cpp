@@ -10,6 +10,8 @@
 #include <dxgi1_4.h>
 
 LONGLONG QkFacadeClock() { LARGE_INTEGER value; QueryPerformanceCounter(&value); return value.QuadPart; }
+#include "s5i-interface-timing.h"
+#include "d3d11facade-pool.inl"
 #include "d3d11facade-counters.inl"
 void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail)
 {
@@ -26,6 +28,7 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
 
 void QkFacadeTrace(const char *line)
 {
+    QK_INTERFACE_SCOPE(Trace);
     OutputDebugStringA(line);
     WCHAR path[32768] = {};
     DWORD n = GetEnvironmentVariableW(L"QUICKER_FACADE_LOG", path, ARRAYSIZE(path));
@@ -111,11 +114,15 @@ void QkD3D11State::EnterShared() {
     EnterCriticalSection(&qkSharedLock);
 }
 void QkD3D11State::LeaveShared() { LeaveCriticalSection(&qkSharedLock); }
+void QkD3D11State::InvalidateTransientCache() {
+    if(m_transientPool) m_transientPool->Invalidate();
+    m_sparePresentQueries.clear(); m_presentQueries.clear();
+}
 HRESULT QkD3D11State::DeviceStatus() const {
     QkFacadeSharedGuard guard;
     HRESULT hr = FAILED(removedReason) ? removedReason : device->GetDeviceRemovedReason();
     if (FAILED(hr) && SUCCEEDED(removedReason)) {
-        for(auto state:qkSharedStates) if(state->device.Get()==device.Get()) state->removedReason=hr;
+        for(auto state:qkSharedStates) if(state->device.Get()==device.Get()) { state->removedReason=hr; state->InvalidateTransientCache(); }
         char line[220];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE native removed hr=0x%08x generation=%llu tick=%llu\n",hr,generation,GetTickCount64());QkFacadeTrace(line);
     }
     return FAILED(hr) ? WGXERR_DISPLAYSTATEINVALID : S_OK;
@@ -128,7 +135,7 @@ void QkD3D11State::ExperimentRemoval() {
     if (consumed || !n || n >= ARRAYSIZE(path) || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return;
     consumed = true;
     // 只污染本进程、同一实际设备的全部包装；旧包装存活也不得再次被复用。
-    for (auto state : qkSharedStates) if (state->device.Get() == device.Get()) state->removedReason = DXGI_ERROR_DEVICE_REMOVED;
+    for (auto state : qkSharedStates) if (state->device.Get() == device.Get()) { state->removedReason = DXGI_ERROR_DEVICE_REMOVED; state->InvalidateTransientCache(); }
     char line[240]; StringCchPrintfA(line, ARRAYSIZE(line),
         "QK-FACADE experiment removed hr=0x%08x generation=%llu tick=%llu thread=%lu\n", DXGI_ERROR_DEVICE_REMOVED, generation, GetTickCount64(), GetCurrentThreadId());
     QkFacadeTrace(line);
@@ -178,6 +185,7 @@ void QkD3D11State::RetireMediaTexture(QkTextureHandle *texture)
 }
 QkD3D11State::~QkD3D11State() {
     EnterShared();
+    InvalidateTransientCache();
     auto active=qkActiveStates.find(context.Get());
     if(active!=qkActiveStates.end() && active->second==this) { if(context) context->ClearState(); qkActiveStates.erase(active); }
     auto found=std::find(qkSharedStates.begin(),qkSharedStates.end(),this); if(found!=qkSharedStates.end()) qkSharedStates.erase(found);
@@ -431,8 +439,9 @@ HRESULT QkD3D11State::RecordPresent()
     D3D11_QUERY_DESC desc = { D3D11_QUERY_EVENT, 0 };
     // 即使调用方没有查询排队数，也要回收已完成的 fence，不能随呈现次数积累。
     UINT queued; HRESULT hr=GetNumQueuedPresents(&queued); if(FAILED(hr)) return hr;
-    ComPtr<ID3D11Query> query; query.Swap(m_sparePresentQuery);
-    if(!query) { hr=device->CreateQuery(&desc,&query); if(FAILED(hr)) return hr; QkAccount(query.Get(),"present-query"); }
+    ComPtr<ID3D11Query> query;
+    if(!m_sparePresentQueries.empty()) { query=std::move(m_sparePresentQueries.back()); m_sparePresentQueries.pop_back(); QkFacadeCount(QkFacadeCounter::QueryReuse); }
+    if(!query) { QK_INTERFACE_SCOPE(Query); hr=device->CreateQuery(&desc,&query); if(FAILED(hr)) return hr; QkAccount(query.Get(),"present-query"); }
     context->End(query.Get()); context->Flush();
     m_presentQueries.push_back(query); return S_OK;
 }
@@ -446,7 +455,7 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
         HRESULT hr = context->GetData(m_presentQueries.front().Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
         if (FAILED(hr)) return hr;
         if (hr == S_FALSE || !done) break;
-        if(!m_sparePresentQuery) m_sparePresentQuery=m_presentQueries.front();
+        if(m_sparePresentQueries.size()<16) m_sparePresentQueries.push_back(m_presentQueries.front());
         m_presentQueries.erase(m_presentQueries.begin());
     }
     // 与原 WPF GPU marker 同一含义：尚未完成的真实 GPU 命令队列，非 DWM 扫描输出队列。
@@ -617,16 +626,16 @@ HRESULT QkD3D11State::Apply()
 HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
 {
     if (type != D3DPT_TRIANGLELIST && type != D3DPT_TRIANGLESTRIP && type != D3DPT_LINELIST) return QkFacadeUnimpl("Draw.topology");
-    HRESULT hr = Apply(); if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
+    HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
     context->IASetPrimitiveTopology(type == D3DPT_TRIANGLELIST ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : type == D3DPT_TRIANGLESTRIP ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-    context->Draw(vertices, start);
+    { QK_INTERFACE_SCOPE(Draw); context->Draw(vertices, start); }
     QkFacadeTrace("QK-FACADE Draw original-hw\n");
     return DeviceStatus();
 }
 HRESULT QkD3D11State::DrawIndexed(UINT indices, UINT startIndex, INT baseVertex)
 {
-    HRESULT hr = Apply(); if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); context->DrawIndexed(indices, startIndex, baseVertex);
+    HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); { QK_INTERFACE_SCOPE(Draw); context->DrawIndexed(indices, startIndex, baseVertex); }
     QkFacadeTrace("QK-FACADE DrawIndexed original-hw\n");
     return DeviceStatus();
 }

@@ -40,6 +40,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI QuickerFacadeReadCounters(char *
         "{\"schema\":1,\"enabled\":%s,\"qpc\":%lld,\"counters\":{",QkFacadeCountersEnabled()?"true":"false",QkFacadeClock());
     for(UINT n=0;SUCCEEDED(hr) && n<ARRAYSIZE(names);++n)
         hr=StringCchPrintfExA(cursor,remaining,&cursor,&remaining,0,"%s\"%s\":%lld",n?",":"",names[n],InterlockedCompareExchange64(&qkFacadeCounters[n],0,0));
+    if(SUCCEEDED(hr)) hr=QkInterfaceAppend(cursor,remaining);
     if(SUCCEEDED(hr)) hr=StringCchPrintfA(cursor,remaining,"}}");
     return hr;
 }

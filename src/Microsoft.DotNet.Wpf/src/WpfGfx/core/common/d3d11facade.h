@@ -6,6 +6,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <map>
+#include <memory>
 #include <vector>
 #include <string>
 #include <d3dcompiler.h>
@@ -27,6 +28,7 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     X(QueryCreate,"query.create") X(QueryRelease,"query.release") X(ViewCreate,"view.create") X(ViewRelease,"view.release") \
     X(WaitForVBlank,"wait-for-vblank") X(OutputLookup,"wait-for-vblank.output-lookup") \
     X(ShaderConvert,"shader.convert") X(ShaderCompile,"shader.compile") X(ShaderCacheHit,"shader.cache-hit") X(ShaderCacheMiss,"shader.cache-miss") \
+    X(RtPoolHit,"rt-pool.hit") X(RtPoolMiss,"rt-pool.miss") X(RtPoolReturn,"rt-pool.return") X(RtPoolEvict,"rt-pool.evict") X(FixedPairHit,"shader.fixed-pair-hit") X(QueryReuse,"query.reuse") \
     X(FixedSourceBuild,"shader.fixed-source-build") X(FixedVertexCacheHit,"shader.fixed-vs-cache-hit")
 enum class QkFacadeCounter {
 #define QK_COUNTER_ENUM(name, label) name,
@@ -61,11 +63,14 @@ using QkVertexBufferHandle = QkTypedBuffer<0>;
 using QkIndexBufferHandle = QkTypedBuffer<1>;
 
 // 纹理与 mip 视图共同持有资源；CPU 锁定镜像仅用于位图/渐变上传。
+struct QkTransientPool;
+struct QkTransientLease;
 class QkTextureHandle;
 class QkSurfaceHandle
 {
     LONG m_refs = 1;
 public:
+    std::shared_ptr<QkTransientLease> transientLease;
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11RenderTargetView> rtv;
     ComPtr<ID3D11ShaderResourceView> srv;
@@ -94,6 +99,7 @@ class QkTextureHandle
 {
     LONG m_refs = 1;
 public:
+    std::shared_ptr<QkTransientLease> transientLease;
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11ShaderResourceView> srv;
     ComPtr<ID3D11DeviceContext> context;
@@ -146,7 +152,8 @@ class QkD3D11State
     D3DMATERIAL9 m_material = {};
     std::map<D3DTRANSFORMSTATETYPE, CBaseMatrix> m_transforms;
     std::vector<ComPtr<ID3D11Query>> m_presentQueries;
-    ComPtr<ID3D11Query> m_sparePresentQuery;
+    std::vector<ComPtr<ID3D11Query>> m_sparePresentQueries;
+    std::shared_ptr<QkTransientPool> m_transientPool;
     D3DVIEWPORT9 m_viewport = {};
     RECT m_scissor = {};
     std::map<unsigned long long, ComPtr<ID3D11BlendState>> m_blends;
@@ -161,6 +168,9 @@ class QkD3D11State
     std::map<std::string,ComPtr<QkFacadeShader>> m_shaderCache;
     // 显式 PS 配固定功能 VS 时，VS 源只依赖纹理坐标数量，最多九个条目；布局仍按原 FVF 单独缓存。
     std::map<UINT,ComPtr<QkFacadeShader>> m_fixedVertexShaders;
+    struct FixedPair { ComPtr<QkFacadeShader> vs,ps; };
+    std::map<std::string,FixedPair> m_fixedPairs; // 最多 128 个成功状态；不缓存失败。
+    void InvalidateTransientCache();
     std::map<std::string,ComPtr<ID3D11SamplerState>> m_samplerCache;
     HRESULT Apply();
     HRESULT ApplyShaders();

@@ -32,6 +32,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/s5i-interface-timing.inl"
 #if QUICKER_WPF_D3D11_FACADE
 #include "d3d11-builtin-shaders.inl"
 #endif
@@ -2379,6 +2380,7 @@ CD3DDeviceLevel1::CreateTexture(
 
         BEGIN_DEVICE_ALLOCATION;
 
+        QK_INTERFACE_SCOPE(Texture);
         hr = m_pD3DDevice->CreateTexture(
             pSurfDesc->Width,
             pSurfDesc->Height,
@@ -2493,6 +2495,7 @@ CD3DDeviceLevel1::CreateLockableTexture(
 
         BEGIN_DEVICE_ALLOCATION;
 
+        QK_INTERFACE_SCOPE(Texture);
         hr = m_pD3DDevice->CreateTexture(
             pSurfDesc->Width,
             pSurfDesc->Height,
@@ -2702,7 +2705,8 @@ CD3DDeviceLevel1::CreateSysMemReferenceTexture(
 
     BEGIN_DEVICE_ALLOCATION;
 
-    hr = m_pD3DDevice->CreateTexture(
+    QK_INTERFACE_SCOPE(Texture);
+        hr = m_pD3DDevice->CreateTexture(
         pSurfDesc->Width,
         pSurfDesc->Height,
         uiLevels,
@@ -3459,8 +3463,8 @@ CD3DDeviceLevel1::Present(
         }
         DXGI_PRESENT_PARAMETERS params={}; params.DirtyRectsCount=static_cast<UINT>(dirty.size()); params.pDirtyRects=dirty.empty()?nullptr:dirty.data();
         LONGLONG presentStarted=QkFacadeClock();
-        hr=pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
-            (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params);
+        hr=QK_INTERFACE_CALL(Present,pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
+            (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params));
         QkFacadeTiming("Present1",presentStarted,hr,pD3DSwapChain->m_facadeSyncInterval);
         if(hr==DXGI_STATUS_OCCLUDED) {
             // 原 WDDM 普通窗口策略：短暂退让、通知 UI 重验窗口，保持后续渲染可恢复。
@@ -3682,13 +3686,13 @@ CD3DDeviceLevel1::PresentWithD3D(
 
     BEGIN_DEVICE_ALLOCATION;
 
-    hr = pD3DSwapChain->Present(
+    hr = QK_INTERFACE_CALL(Present,pD3DSwapChain->Present(
         prcSource,
         prcDest,
         pMILDC->GetHWND(),
         (prcSource == NULL) ? NULL : pDirtyRegion,
         dwD3DPresentFlags
-        );
+        ));
 
     END_DEVICE_ALLOCATION;
 
@@ -5857,7 +5861,7 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
 
         IFC(SetIndices(NULL));
 
-        IFC(m_pD3DDevice->DrawIndexedPrimitiveUP(
+        IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawIndexedPrimitiveUP(
             D3DPT_TRIANGLELIST,
             0,
             uNumVertices,
@@ -5866,7 +5870,7 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
             D3DFMT_INDEX16,
             pVertexStreamZeroData,
             uVertexStreamZeroStride
-            ));
+            )));
 
         UpdateMetrics(uNumVertices, uPrimitiveCount);
 
@@ -5916,14 +5920,14 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
     {
         MtSetDefault(Mt(D3DDrawIndexedPrimitive));
 
-        IFC(m_pD3DDevice->DrawIndexedPrimitive(
+        IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawIndexedPrimitive(
             D3DPT_TRIANGLELIST,
             uiCurrentVertex,
             0,
             uNumVertices,
             uiCurrentIndex,
             uPrimitiveCount
-            ));
+            )));
     }
 
     UpdateMetrics(uNumVertices, uPrimitiveCount);
@@ -5968,14 +5972,14 @@ CD3DDeviceLevel1::DrawIndexedTriangleList(
     HRESULT hr = S_OK;
     MtSetDefault(Mt(D3DDrawIndexedPrimitive));
 
-    IFC(m_pD3DDevice->DrawIndexedPrimitive(
+    IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawIndexedPrimitive(
         D3DPT_TRIANGLELIST,
         uBaseVertexIndex,
         uMinIndex,
         cVertices,
         uStartIndex,
         cPrimitives
-        ));
+        )));
 
     UpdateMetrics(cVertices, cPrimitives);
 
@@ -6007,11 +6011,11 @@ CD3DDeviceLevel1::DrawTriangleList(
     HRESULT hr = S_OK;
     MtSetDefault(Mt(D3DDrawPrimitive));
 
-    IFC(m_pD3DDevice->DrawPrimitive(
+    IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawPrimitive(
         D3DPT_TRIANGLELIST,
         uStartVertex,
         cPrimitives
-        ));
+        )));
 
     UpdateMetrics(cPrimitives*3, cPrimitives);
 
@@ -6043,11 +6047,11 @@ CD3DDeviceLevel1::DrawTriangleStrip(
     HRESULT hr = S_OK;
     MtSetDefault(Mt(D3DDrawPrimitive));
 
-    IFC(m_pD3DDevice->DrawPrimitive(
+    IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawPrimitive(
         D3DPT_TRIANGLESTRIP,
         uStartVertex,
         cPrimitives
-        ));
+        )));
 
     UpdateMetrics(cPrimitives + 2, cPrimitives);
 
@@ -6158,12 +6162,12 @@ CD3DDeviceLevel1::DrawLargePrimitiveUP(
             NULL
             ));
 
-        IFC(m_pD3DDevice->DrawPrimitiveUP(
+        IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawPrimitiveUP(
             primitiveType,
             uDrawPrimCount,
             pbVertexStreamPosition,
             uVertexStreamZeroStride
-            ));
+            )));
 
         UpdateMetrics(0, uDrawPrimCount);
 
@@ -6419,12 +6423,12 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
             0
             ));
 
-        IFC(m_pD3DDevice->DrawPrimitiveUP(
+        IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawPrimitiveUP(
             primitiveType,
             uPrimitiveCount,
             pVertexStreamZeroData,
             uVertexStreamZeroStride
-            ));
+            )));
 
         UpdateMetrics(uNumVertices, uPrimitiveCount);
 
@@ -6461,11 +6465,11 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
     {
         MtSetDefault(Mt(D3DDrawPrimitive));
 
-        IFC(m_pD3DDevice->DrawPrimitive(
+        IFC(QK_INTERFACE_CALL(Draw,m_pD3DDevice->DrawPrimitive(
             primitiveType,
             uiCurrentVertex,
             uPrimitiveCount
-            ));
+            )));
     }
 
     UpdateMetrics(uNumVertices, uPrimitiveCount);
@@ -6892,10 +6896,10 @@ CD3DDeviceLevel1::InsertGPUMarker(
     //
     if (!AreGPUMarkersTested())
     {
-        MIL_THR(m_pD3DDevice->CreateQuery(
+        MIL_THR(QK_INTERFACE_CALL(Query,m_pD3DDevice->CreateQuery(
             D3DQUERYTYPE_EVENT,
             NULL
-            ));
+            )));
 
         //
         // If we fail in the creation of a query, disable markers.
@@ -6929,7 +6933,7 @@ CD3DDeviceLevel1::InsertGPUMarker(
     else
     {
         IDirect3DQuery9 *pQuery = NULL;
-        IFC(m_pD3DDevice->CreateQuery(D3DQUERYTYPE_EVENT, &pQuery));
+        IFC(QK_INTERFACE_CALL(Query,m_pD3DDevice->CreateQuery(D3DQUERYTYPE_EVENT, &pQuery)));
         pMarker = new CGPUMarker(pQuery, ullMarkerId);
         IFCOOM(pMarker);
     }

@@ -18,6 +18,7 @@ static UINT QkPixelSize(D3DFORMAT format)
 
 HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTextureHandle **out)
 {
+    QK_INTERFACE_SCOPE(TextureWrapper);
     *out=nullptr;
     if(!desc || !desc->Width || !desc->Height || desc->MultiSampleType!=D3DMULTISAMPLE_NONE) return E_INVALIDARG;
     DXGI_FORMAT format=QkFormat(desc->Format);
@@ -29,15 +30,26 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
     t->context=context; t->generation=generation;
     D3D11_TEXTURE2D_DESC td={}; td.Width=desc->Width; td.Height=desc->Height;
     td.MipLevels=levels; td.ArraySize=1; td.Format=format; td.SampleDesc.Count=1;
+    const bool pooled=levels==1 && desc->Pool==D3DPOOL_DEFAULT && desc->Usage==D3DUSAGE_RENDERTARGET;
+    std::shared_ptr<QkTransientLease> lease;
+    bool poolHit=false;
+    if(pooled) {
+        if(FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+        if(!m_transientPool) m_transientPool=std::make_shared<QkTransientPool>();
+        lease=std::make_shared<QkTransientLease>(); lease->pool=m_transientPool;
+        poolHit=m_transientPool->Take(*desc,lease->bundle);
+        if(poolHit) { t->texture=lease->bundle.texture; t->srv=lease->bundle.srv; }
+        t->transientLease=lease;
+    }
     // 系统内存资源保存锁定镜像；可采样资源只分配一次 DEFAULT，脏区 UpdateSubresource。
-    if(desc->Pool!=D3DPOOL_SYSTEMMEM) {
+    if(desc->Pool!=D3DPOOL_SYSTEMMEM && !poolHit) {
         td.Usage=D3D11_USAGE_DEFAULT; td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
         if(desc->Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_AUTOGENMIPMAP)) td.BindFlags|=D3D11_BIND_RENDER_TARGET;
         if(desc->Usage&D3DUSAGE_AUTOGENMIPMAP) td.MiscFlags=D3D11_RESOURCE_MISC_GENERATE_MIPS;
-        HRESULT hr=device->CreateTexture2D(&td,nullptr,&t->texture); if(FAILED(hr)) return hr;
+        HRESULT hr; { QK_INTERFACE_SCOPE(Texture); hr=device->CreateTexture2D(&td,nullptr,&t->texture); } if(FAILED(hr)) return hr;
         ULONGLONG bytes=0; for(UINT n=0;n<levels;++n) bytes+=static_cast<ULONGLONG>(max(1U,td.Width>>n))*max(1U,td.Height>>n)*QkPixelSize(desc->Format);
         QkAccount(t->texture.Get(),(desc->Usage&D3DUSAGE_RENDERTARGET)?"RT-offscreen":(desc->Format==D3DFMT_A8 || desc->Format==D3DFMT_L8)?"glyph-atlas":"sample-texture",bytes);
-        hr=device->CreateShaderResourceView(t->texture.Get(),nullptr,&t->srv); if(FAILED(hr)) return hr;
+        { QK_INTERFACE_SCOPE(Srv); hr=device->CreateShaderResourceView(t->texture.Get(),nullptr,&t->srv); } if(FAILED(hr)) return hr;
         QkAccount(t->srv.Get(),"SRV");
     }
     for(UINT n=0;n<levels;++n) {
@@ -45,18 +57,26 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         if(!v) return E_OUTOFMEMORY;
         v->texture=t->texture; v->context=context; v->generation=generation; v->mip=n;
         v->desc=*desc; v->desc.Width=max(1U,desc->Width>>n); v->desc.Height=max(1U,desc->Height>>n);
-        if(t->texture) {
+        v->transientLease=lease;
+        if(poolHit) { v->srv=lease->bundle.srv; v->rtv=lease->bundle.rtv; }
+        // 单 mip 的全纹理 SRV 与 mip SRV 等价；无需再建一个同描述视图。
+        if(levels==1) v->srv=t->srv;
+        if(t->texture && !v->srv) {
             D3D11_SHADER_RESOURCE_VIEW_DESC sd={}; sd.Format=format; sd.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;
             sd.Texture2D.MostDetailedMip=n; sd.Texture2D.MipLevels=1;
-            HRESULT hr=device->CreateShaderResourceView(t->texture.Get(),&sd,&v->srv); if(FAILED(hr)) return hr;
+            HRESULT hr; { QK_INTERFACE_SCOPE(Srv); hr=device->CreateShaderResourceView(t->texture.Get(),&sd,&v->srv); } if(FAILED(hr)) return hr;
             QkAccount(v->srv.Get(),"SRV");
         }
-        if(td.BindFlags&D3D11_BIND_RENDER_TARGET) {
+        if((td.BindFlags&D3D11_BIND_RENDER_TARGET) && !v->rtv) {
             D3D11_RENDER_TARGET_VIEW_DESC rd={}; rd.Format=format; rd.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D; rd.Texture2D.MipSlice=n;
-            HRESULT hr=device->CreateRenderTargetView(t->texture.Get(),&rd,&v->rtv); if(FAILED(hr)) return hr;
+            HRESULT hr; { QK_INTERFACE_SCOPE(Rtv); hr=device->CreateRenderTargetView(t->texture.Get(),&rd,&v->rtv); } if(FAILED(hr)) return hr;
             QkAccount(v->rtv.Get(),"RTV");
         }
         t->levels.push_back(v.Detach());
+    }
+    if(lease && !poolHit) {
+        lease->bundle.desc=*desc; lease->bundle.texture=t->texture; lease->bundle.srv=t->srv; lease->bundle.rtv=t->levels[0]->rtv;
+        lease->bundle.bytes=static_cast<ULONGLONG>(desc->Width)*desc->Height*QkPixelSize(desc->Format);
     }
     QkFacadeTrace((desc->Usage&D3DUSAGE_RENDERTARGET)?"QK-FACADE create offscreen RT texture\n":"QK-FACADE create upload/sample texture\n");
     *out=t.Detach(); return S_OK;
@@ -185,6 +205,7 @@ static std::string QkModernHLSL(std::string s)
 
 HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacadeShader **out)
 {
+    QK_INTERFACE_SCOPE(ShaderLookup);
     *out=nullptr;
     std::string text(source,bytes); while(!text.empty() && text.back()==0) text.pop_back();
     bool fragments=text.find("VertexShaderImpl(")!=std::string::npos;
@@ -198,6 +219,7 @@ HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacade
     if(!shader) return E_OUTOFMEMORY;
     ComPtr<ID3DBlob> errors;
     QkFacadeCount(QkFacadeCounter::ShaderCompile);
+    QkInterfaceScope compileScope(QkInterfaceMetric::ShaderCompile);
     HRESULT hr=D3DCompile(text.data(),text.size(),"QkOriginalHw",nullptr,nullptr,
         fragments?(vertex?"VertexShaderImpl":"PixelShaderImpl"):(vertex?"VS":"PS"),vertex?"vs_4_0":"ps_4_0",
         D3DCOMPILE_ENABLE_STRICTNESS,0,&shader->code,&errors);
@@ -294,11 +316,22 @@ HRESULT QkD3D11State::ApplyShaders()
     if(vs && !ps) return QkFacadeUnimpl("Draw.mixedShaderStages");
     const UINT fixedCount=(m_fvf&D3DFVF_TEXCOUNT_MASK)>>D3DFVF_TEXCOUNT_SHIFT;
     const bool fixedVertexOnly=!vs && ps;
+    std::string pairKey;
+    if(!vs && !ps) {
+        QkInterfaceScope lookupScope(QkInterfaceMetric::ShaderLookup);
+        pairKey.assign(reinterpret_cast<const char *>(&fixedCount),sizeof(fixedCount));
+        pairKey.append(reinterpret_cast<const char *>(m_stages),sizeof(m_stages));
+        BYTE boundMask=0; for(UINT n=0;n<8;++n) if(m_textures[n]) boundMask|=1U<<n;
+        pairKey.push_back(static_cast<char>(boundMask));
+        auto found=m_fixedPairs.find(pairKey);
+        if(found!=m_fixedPairs.end()) { vs=found->second.vs; ps=found->second.ps; QkFacadeCount(QkFacadeCounter::FixedPairHit); }
+    }
     if(fixedVertexOnly) {
         auto cached=m_fixedVertexShaders.find(fixedCount);
         if(cached!=m_fixedVertexShaders.end()) { vs=cached->second; QkFacadeCount(QkFacadeCounter::FixedVertexCacheHit); }
     }
     if(!vs || !ps) {
+        QkInterfaceScope sourceScope(QkInterfaceMetric::FixedSource);
         QkFacadeCount(QkFacadeCounter::FixedSourceBuild);
         UINT count=(m_fvf&D3DFVF_TEXCOUNT_MASK)>>D3DFVF_TEXCOUNT_SHIFT;
         std::string source="cbuffer Target:register(b0){float4 size;}; struct V{float4 p:SV_Position;float4 c:COLOR0;";
@@ -332,9 +365,15 @@ HRESULT QkD3D11State::ApplyShaders()
             source+="c=float4(("+rgb+").rgb,("+alpha+").a);";
         }
         source+="return c;}";
+        sourceScope.Stop();
         HRESULT hr=Compile(source.data(),static_cast<UINT>(source.size()),true,&vs); if(FAILED(hr)) return hr;
         if(!ps) { hr=Compile(source.data(),static_cast<UINT>(source.size()),false,&ps); if(FAILED(hr)) return hr; }
         if(fixedVertexOnly) m_fixedVertexShaders[fixedCount]=vs;
+        else if(!pairKey.empty()) {
+            // shader 对象仍由原 Compile 缓存拥有；这里只限制状态键的额外内存。
+            if(m_fixedPairs.size()>=128) m_fixedPairs.erase(m_fixedPairs.begin());
+            m_fixedPairs[pairKey]={vs,ps};
+        }
     }
     ID3D11InputLayout *layout=nullptr; HRESULT hr=InputLayout(vs.Get(),&layout); if(FAILED(hr)) return hr;
     context->IASetInputLayout(layout); context->VSSetShader(vs->vs.Get(),nullptr,0); context->PSSetShader(ps->ps.Get(),nullptr,0);
