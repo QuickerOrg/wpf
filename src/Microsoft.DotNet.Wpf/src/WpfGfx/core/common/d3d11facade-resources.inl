@@ -237,6 +237,9 @@ HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacade
             if(input.Type==D3D_SIT_TEXTURE) {
                 if(input.BindPoint>=8 || input.BindCount>8-input.BindPoint) return QkFacadeUnimpl("Shader.textureSlots");
                 for(UINT i=0;i<input.BindCount;++i) shader->sampledMask|=1U<<(input.BindPoint+i);
+            } else if(input.Type==D3D_SIT_SAMPLER) {
+                // sampler 与纹理可使用不同槽，必须单独采用编译后 sampler 反射结果。
+                for(UINT i=0;i<input.BindCount && input.BindPoint+i<8;++i) shader->samplerMask|=1U<<(input.BindPoint+i);
             }
         }
     }
@@ -411,6 +414,13 @@ HRESULT QkD3D11State::ApplyShaders()
         if(submitSrv) { context->PSSetShaderResources(n,1,&srv);m_appliedSrvs[n]=srv; }
         QkFacadeCount(submitSrv?QkFacadeCounter::BindingSubmit:QkFacadeCounter::BindingSkip);
         textureScope.Stop();
+        // SRV 解绑/冲突检查仍完整执行。仅跳过当前 PS 根本不访问的采样器槽。
+        // samplerMask 来自编译后反射；稍后该槽变为活跃时强制恢复实际 sampler 绑定。
+        if(QkFacadeUnusedSamplerSkipEnabled() && !(ps->samplerMask&(1U<<n))) {
+            m_samplerBindingKnown[n]=false;
+            QkFacadeCount(QkFacadeCounter::SamplerUnusedSkip);
+            continue;
+        }
         QK_INTERFACE_SCOPE(SamplerApply);
         auto &st=m_samplers[n];
         if(srv && st[D3DSAMP_SRGBTEXTURE]) return QkFacadeUnimpl("Sampler.sRGB");
@@ -441,6 +451,62 @@ HRESULT QkD3D11State::ApplyShaders()
     return S_OK;
 }
 
+
+// 专用路径只覆盖等尺寸颜色复制。缩放、Present 裁剪、同资源与其它格式仍走原路径。
+// 源 SRV 保持原物理格式（包括 BGRA 的 HWND 保留面），目标仍按逻辑 XRGB 禁写 Alpha。
+// 不改门面影子状态；退出时原 Copy 的绑定失效守卫确保下次普通 Draw 重新绑定。
+static bool QkFacadeFastCopyEnabled() {
+    static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_FAST_COPY",v,2)==1 && v[0]==L'1');}();
+    return enabled;
+}
+HRESULT QkD3D11State::CopyColorFast(QkSurfaceHandle *src,QkSurfaceHandle *dst,const RECT &a,const RECT &b)
+{
+    HRESULT hr=S_OK;
+    if(!m_copyVS) {
+        static const char vs[]="float4 VS(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p.x*2-1,1-p.y*2,0,1); }";
+        hr=Compile(vs,sizeof(vs)-1,true,&m_copyVS);if(FAILED(hr))return hr;
+    }
+    if(!m_copyPS) {
+        // SV_Position 是目标的像素中心；整数偏移对应旧等尺寸 blit 的源像素中心。
+        // Load 不引入过滤、地址模式或顶点插值误差；仅针对已验证的矩形内区域。
+        static const char ps[]="cbuffer Offset:register(b0){int4 delta;} Texture2D<float4> image:register(t0); float4 PS(float4 p:SV_Position):SV_Target { return image.Load(int3(int2(p.xy)+delta.xy,0)); }";
+        hr=Compile(ps,sizeof(ps)-1,false,&m_copyPS);if(FAILED(hr))return hr;
+    }
+    if(!m_copyConstants) {
+        D3D11_BUFFER_DESC bd={};bd.ByteWidth=16;bd.Usage=D3D11_USAGE_DYNAMIC;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;bd.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        hr=device->CreateBuffer(&bd,nullptr,&m_copyConstants);if(FAILED(hr))return hr;QkAccount(m_copyConstants.Get(),"copy-buffer",16);
+    }
+    const bool opaque=dst->desc.Format==D3DFMT_X8R8G8B8;
+    if(!m_copyBlends[opaque]) {
+        D3D11_BLEND_DESC bd={};auto &blend=bd.RenderTarget[0];blend.RenderTargetWriteMask=opaque?7:15;
+        blend.SrcBlend=blend.SrcBlendAlpha=D3D11_BLEND_ONE;blend.DestBlend=blend.DestBlendAlpha=D3D11_BLEND_ZERO;blend.BlendOp=blend.BlendOpAlpha=D3D11_BLEND_OP_ADD;
+        hr=device->CreateBlendState(&bd,&m_copyBlends[opaque]);if(FAILED(hr))return hr;QkAccount(m_copyBlends[opaque].Get(),"copy-blend-state");
+    }
+    const INT offset[]={a.left-b.left,a.top-b.top,0,0};
+    if(!m_copyOffsetValid || memcmp(m_copyOffset,offset,sizeof(offset))) {
+        QK_INTERFACE_SCOPE(ConstantUpload);
+        D3D11_MAPPED_SUBRESOURCE mapped={};hr=context->Map(m_copyConstants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(FAILED(hr))return hr;
+        memcpy(mapped.pData,offset,sizeof(offset));context->Unmap(m_copyConstants.Get(),0);
+        memcpy(m_copyOffset,offset,sizeof(offset));m_copyOffsetValid=true;
+    }
+    D3D11_VIEWPORT vp={static_cast<float>(b.left),static_cast<float>(b.top),static_cast<float>(b.right-b.left),static_cast<float>(b.bottom-b.top),0,1};
+    {
+        QK_INTERFACE_SCOPE(RenderBindings);
+        context->OMSetRenderTargets(1,dst->rtv.GetAddressOf(),nullptr);
+        context->OMSetBlendState(m_copyBlends[opaque].Get(),nullptr,UINT_MAX);
+        context->OMSetDepthStencilState(nullptr,0);context->RSSetState(m_raster[0].Get());context->RSSetViewports(1,&vp);
+    }
+    {
+        QK_INTERFACE_SCOPE(ShaderBindings);
+        context->IASetInputLayout(nullptr);context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(m_copyVS->vs.Get(),nullptr,0);context->PSSetShader(m_copyPS->ps.Get(),nullptr,0);
+        context->PSSetConstantBuffers(0,1,m_copyConstants.GetAddressOf());context->PSSetShaderResources(0,1,src->srv.GetAddressOf());
+    }
+    { QK_INTERFACE_SCOPE(BlitFormatDraw);QkInterfaceScope draw(QkInterfaceMetric::Draw);context->Draw(3,0); }
+    // 与旧路径一致：解绑由下一次 Copy/BindTarget 或普通 Draw 的验证完成。
+    return DeviceStatus();
+}
+
 HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter, bool presentClipping)
 {
     QK_INTERFACE_SCOPE(CopyTotal);
@@ -462,10 +528,18 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     if(!dst->texture) return E_INVALIDARG;
     D3D11_TEXTURE2D_DESC srcNative={},dstNative={};
     src->texture->GetDesc(&srcNative); dst->texture->GetDesc(&dstNative);
+    const bool nativeCopy=!presentClipping && sameSize && src->desc.Format==dst->desc.Format && srcNative.Format==dstNative.Format && src->texture.Get()!=dst->texture.Get();
+    if(!nativeCopy) {
+        const UINT details[]={src->desc.Format,dst->desc.Format,srcNative.Format,dstNative.Format,src->desc.Width,src->desc.Height,dst->desc.Width,dst->desc.Height,
+            static_cast<UINT>(a.left),static_cast<UINT>(a.top),static_cast<UINT>(a.right-a.left),static_cast<UINT>(a.bottom-a.top),
+            static_cast<UINT>(b.left),static_cast<UINT>(b.top),static_cast<UINT>(b.right-b.left),static_cast<UINT>(b.bottom-b.top),src->desc.Usage,dst->desc.Usage,src->mip,dst->mip};
+        QkS5kRecord(1,details,ARRAYSIZE(details));
+    }
+    QkInterfaceScope blitTotal(QkInterfaceMetric::BlitTotal,!nativeCopy);
     ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty); context->OMSetRenderTargets(0,nullptr,nullptr);
     // 逻辑 XRGB 的 HWND 保留表面使用 BGRA（供 flip/GDI），普通纹理使用 BGRX。
     // 两者不是同一个 DXGI 类型组，不能用无返回值的 CopySubresourceRegion 静默丢弃复制。
-    if(!presentClipping && sameSize && src->desc.Format==dst->desc.Format && srcNative.Format==dstNative.Format && src->texture.Get()!=dst->texture.Get()) {
+    if(nativeCopy) {
         D3D11_BOX box={static_cast<UINT>(a.left),static_cast<UINT>(a.top),0,static_cast<UINT>(a.right),static_cast<UINT>(a.bottom),1};
         QK_INTERFACE_SCOPE(CopyNative);
         context->CopySubresourceRegion(dst->texture.Get(),dst->mip,b.left,b.top,0,src->texture.Get(),src->mip,&box);
@@ -474,6 +548,11 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     }
     // 缩放与同资源不同 mip 通过 shader blit；为源 mip 建独立 SRV，避免读写重叠。
     if(!dst->rtv || (src->texture.Get()==dst->texture.Get() && src->mip==dst->mip)) return QkFacadeUnimpl("Copy.overlappingSubresource");
+    if(QkFacadeFastCopyEnabled() && !presentClipping && sameSize && src->texture.Get()!=dst->texture.Get() && src->srv &&
+        (src->desc.Format==D3DFMT_X8R8G8B8 || src->desc.Format==D3DFMT_A8R8G8B8) &&
+        (dst->desc.Format==D3DFMT_X8R8G8B8 || dst->desc.Format==D3DFMT_A8R8G8B8)) {
+        return CopyColorFast(src,dst,a,b);
+    }
     auto oldTarget=target; bool oldOpaque=targetOpaque; UINT oldW=width,oldH=height; auto oldVP=m_viewport; DWORD oldFVF=m_fvf;
     DWORD states[210],stages[8][33],samplers[16][14]; memcpy(states,m_states,sizeof(states)); memcpy(stages,m_stages,sizeof(stages)); memcpy(samplers,m_samplers,sizeof(samplers));
     auto oldVS=m_boundVS,oldPS=m_boundPS; auto oldTex=m_textures[0];

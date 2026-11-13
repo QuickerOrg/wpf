@@ -19,6 +19,7 @@
 //
 //------------------------------------------------------------------------------
 #include "precomp.hpp"
+#include "../common/s5i-interface-timing.h"
 MtDefine(CGPUMarker, MILRender, "CGPUMarker");
 
 //+-----------------------------------------------------------------------------
@@ -92,7 +93,7 @@ HRESULT CGPUMarker::InsertIntoCommandStream()
         IFC(E_FAIL);
     }
 
-    IFC(m_pQuery->Issue(D3DISSUE_END));
+    IFC(QK_INTERFACE_CALL(DriverQuery,m_pQuery->Issue(D3DISSUE_END)));
     m_fIssued = TRUE;
 
   Cleanup:
@@ -125,7 +126,7 @@ HRESULT CGPUMarker::CheckStatus(
         if (!m_fConsumed)
         {
             DWORD dwFlags = (fFlush ? D3DGETDATA_FLUSH : 0);
-            MIL_THR(m_pQuery->GetData(NULL, 0, dwFlags));
+            MIL_THR(QK_INTERFACE_CALL(DriverQuery,m_pQuery->GetData(NULL, 0, dwFlags)));
             m_fConsumed = (hr == S_OK);
 
             if (hr == S_FALSE)

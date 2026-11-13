@@ -41,6 +41,9 @@ struct QkFacadeDrawKind {
 static bool QkFacadeVertexRingEnabled() {
     static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_VERTEX_RING",v,2)==1 && v[0]==L'1');}();return enabled;
 }
+static bool QkFacadeUnusedSamplerSkipEnabled() {
+    static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_UNUSED_SAMPLER_SKIP",v,2)==1 && v[0]==L'1');}();return enabled;
+}
 static bool QkFacadeBindingCacheEnabled() {
     static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_BINDING_CACHE",v,2)==1 && v[0]==L'1');}();return enabled;
 }
@@ -223,7 +226,7 @@ QkD3D11State::~QkD3D11State() {
     auto found=std::find(qkSharedStates.begin(),qkSharedStates.end(),this); if(found!=qkSharedStates.end()) qkSharedStates.erase(found);
     // 析构成员前主动清空绑定，避免 context 持有已释放包装的资源；不 Trim 活跃兄弟设备。
     bool last=true; for(auto state:qkSharedStates) if(state->device.Get()==device.Get()) last=false;
-    if(last && context) { context->ClearState(); context->Flush(); }
+    if(last && context) { context->ClearState(); QK_INTERFACE_CALL(DriverFlush,context->Flush()); }
     LeaveShared();
 }
 
@@ -247,7 +250,7 @@ void QkD3D11State::TrimIfIdle()
         if(SUCCEEDED(state->device.As(&dxgi))) {
             PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
             if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
-            state->context->Flush(); dxgi->Trim();
+            QK_INTERFACE_CALL(DriverFlush,state->context->Flush()); dxgi->Trim();
             if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
             char line[320]; StringCchPrintfA(line,320,"{\"event\":\"idle-trim\",\"device\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu}\n",state->device.Get(),static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage)); QkAccountEvent(line); QkAccountBudget(state->device.Get());
         }
@@ -477,7 +480,7 @@ HRESULT QkD3D11State::RecordPresent()
     ComPtr<ID3D11Query> query;
     if(!m_sparePresentQueries.empty()) { query=std::move(m_sparePresentQueries.back()); m_sparePresentQueries.pop_back(); QkFacadeCount(QkFacadeCounter::QueryReuse); }
     if(!query) { QK_INTERFACE_SCOPE(Query); hr=device->CreateQuery(&desc,&query); if(FAILED(hr)) return hr; QkAccount(query.Get(),"present-query"); }
-    context->End(query.Get()); context->Flush();
+    context->End(query.Get()); QK_INTERFACE_CALL(DriverFlush,context->Flush());
     m_presentQueries.push_back(query); return S_OK;
 }
 HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
@@ -487,7 +490,7 @@ HRESULT QkD3D11State::GetNumQueuedPresents(UINT *count)
     while (!m_presentQueries.empty())
     {
         BOOL done = FALSE;
-        HRESULT hr = context->GetData(m_presentQueries.front().Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        HRESULT hr = QK_INTERFACE_CALL(DriverQuery,context->GetData(m_presentQueries.front().Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH));
         if (FAILED(hr)) return hr;
         if (hr == S_FALSE || !done) break;
         if(m_sparePresentQueries.size()<16) m_sparePresentQueries.push_back(m_presentQueries.front());

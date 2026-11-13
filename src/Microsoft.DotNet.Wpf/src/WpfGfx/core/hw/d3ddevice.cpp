@@ -2853,13 +2853,13 @@ HRESULT CD3DDeviceLevel1::StretchRect(
         }
     }
 
-    IFC(m_pD3DDevice->StretchRect(
+    IFC(QK_INTERFACE_CALL(CopyTotal,m_pD3DDevice->StretchRect(
         pSourceSurface->ID3DSurface(),
         pSourceRect,
         pDestSurface,
         pDestRect,
         Filter
-        ));
+        )));
 
 Cleanup:
     RRETURN(HandleDIE(hr));
@@ -5824,22 +5824,22 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
     // Try to lock both the IB/VB for the fast path case
     //
 
-    hr = THR(m_pHwVertexBuffer->Lock(
+    hr = THR(QK_INTERFACE_CALL(DriverUpload,m_pHwVertexBuffer->Lock(
         uNumVertices,
         uVertexStreamZeroStride,
         &pvDataVertices,
         &uiCurrentVertex
-        ));
+        )));
 
     if (SUCCEEDED(hr))
     {
         fVBLockAcquired = true;
 
-        hr = THR(m_pHwIndexBuffer->Lock(
+        hr = THR(QK_INTERFACE_CALL(DriverUpload,m_pHwIndexBuffer->Lock(
             uiNumIndices,
             reinterpret_cast<WORD **>(&pvDataIndices),
             &uiCurrentIndex
-            ));
+            )));
 
         fIBLockAcquired = SUCCEEDED(hr);
     }
@@ -5887,7 +5887,7 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
 
     RtlCopyMemory(pvDataVertices, pVertexStreamZeroData, uNumVertices*uVertexStreamZeroStride);
 
-    IFC(m_pHwVertexBuffer->Unlock(uNumVertices));
+    IFC(QK_INTERFACE_CALL(DriverUpload,m_pHwVertexBuffer->Unlock(uNumVertices)));
     fVBLockAcquired = false;
 
     //
@@ -5896,7 +5896,7 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
 
     RtlCopyMemory(pvDataIndices, pIndexData, sizeof(short)*uiNumIndices);
 
-    IFC(m_pHwIndexBuffer->Unlock());
+    IFC(QK_INTERFACE_CALL(DriverUpload,m_pHwIndexBuffer->Unlock()));
     fIBLockAcquired = false;
 
     //
@@ -5939,11 +5939,11 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
 Cleanup:
     if (fVBLockAcquired)
     {
-        IGNORE_HR(m_pHwVertexBuffer->Unlock(uNumVertices));
+        IGNORE_HR(QK_INTERFACE_CALL(DriverUpload,m_pHwVertexBuffer->Unlock(uNumVertices)));
     }
     if (fIBLockAcquired)
     {
-        IGNORE_HR(m_pHwIndexBuffer->Unlock());
+        IGNORE_HR(QK_INTERFACE_CALL(DriverUpload,m_pHwIndexBuffer->Unlock()));
     }
 
     RRETURN(HandleDIE(hr));
@@ -6288,6 +6288,10 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
     UINT uVertexStreamZeroStride
     )
 {
+#if QUICKER_WPF_D3D11_FACADE || QUICKER_WPF_S5I_TIMING
+    const UINT details[]={primitiveType,uPrimitiveCount,uVertexStreamZeroStride};
+    QkS5kRecord(2,details,ARRAYSIZE(details));
+#endif
     QK_INTERFACE_SCOPE(EntryUp);
 #if QUICKER_WPF_D3D11_FACADE
     return m_facade->DrawUP(primitiveType,uPrimitiveCount,pVertexStreamZeroData,uVertexStreamZeroStride);
@@ -6404,12 +6408,12 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
     // Try to lock both the IB/VB for the fast path case
     //
 
-    hr = THR(m_pHwVertexBuffer->Lock(
+    hr = THR(QK_INTERFACE_CALL(DriverUpload,m_pHwVertexBuffer->Lock(
         uNumVertices,
         uVertexStreamZeroStride,
         &pvData,
         &uiCurrentVertex
-        ));
+        )));
 
     fLockAcquired = SUCCEEDED(hr);
 
@@ -6449,7 +6453,7 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
 
     RtlCopyMemory(pvData, pVertexStreamZeroData, uNumVertices*uVertexStreamZeroStride);
 
-    IFC(m_pHwVertexBuffer->Unlock(uNumVertices));
+    IFC(QK_INTERFACE_CALL(DriverUpload,m_pHwVertexBuffer->Unlock(uNumVertices)));
     fLockAcquired = false;
 
     //
@@ -6485,7 +6489,7 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
 Cleanup:
     if (fLockAcquired)
     {
-        IGNORE_HR(m_pHwVertexBuffer->Unlock(uNumVertices));
+        IGNORE_HR(QK_INTERFACE_CALL(DriverUpload,m_pHwVertexBuffer->Unlock(uNumVertices)));
     }
 
     RRETURN(HandleDIE(hr));

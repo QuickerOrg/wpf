@@ -36,7 +36,8 @@
     X(HideTrim,"hide-trim") \
     X(EntryIndexedUp,"entry.indexed-up") X(EntryIndexed,"entry.indexed") X(EntryList,"entry.list") \
     X(EntryStrip,"entry.strip") X(EntryUp,"entry.up") X(ZeroDraw,"draw.zero") \
-    X(BlitXtoA,"blit.x-to-a") X(BlitAtoX,"blit.a-to-x") X(BlitOther,"blit.other")
+    X(BlitXtoA,"blit.x-to-a") X(BlitAtoX,"blit.a-to-x") X(BlitOther,"blit.other") \
+    X(BlitTotal,"blit-total") X(DriverBindings,"driver-bindings") X(DriverUpload,"driver-upload") X(DriverQuery,"driver-query") X(DriverFlush,"driver-flush")
 enum class QkInterfaceMetric {
 #define QK_METRIC_ENUM(n,s) n,
     QK_INTERFACE_METRICS(QK_METRIC_ENUM)
@@ -44,6 +45,8 @@ enum class QkInterfaceMetric {
     Count
 };
 bool QkInterfaceEnabled();
+void QkS5kRecord(UINT kind, const UINT *values, UINT count);
+void QkS5kFlush();
 void QkInterfaceAdd(QkInterfaceMetric metric,LONGLONG qpc,ULONGLONG cycles);
 HRESULT QkInterfaceAppend(char *&cursor,size_t &remaining);
 class QkInterfaceScope {
@@ -52,7 +55,7 @@ class QkInterfaceScope {
     LARGE_INTEGER m_start={};
     ULONGLONG m_cycles=0;
 public:
-    explicit QkInterfaceScope(QkInterfaceMetric metric):m_metric(metric),m_active(QkInterfaceEnabled()) {
+    explicit QkInterfaceScope(QkInterfaceMetric metric, bool enabled=true):m_metric(metric),m_active(enabled && QkInterfaceEnabled()) {
         if(m_active) { QueryThreadCycleTime(GetCurrentThread(),&m_cycles); QueryPerformanceCounter(&m_start); }
     }
     void Stop() {

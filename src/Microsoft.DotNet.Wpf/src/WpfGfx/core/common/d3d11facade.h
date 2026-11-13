@@ -30,7 +30,8 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     X(ShaderConvert,"shader.convert") X(ShaderCompile,"shader.compile") X(ShaderCacheHit,"shader.cache-hit") X(ShaderCacheMiss,"shader.cache-miss") \
     X(RtPoolHit,"rt-pool.hit") X(RtPoolMiss,"rt-pool.miss") X(RtPoolReturn,"rt-pool.return") X(RtPoolEvict,"rt-pool.evict") X(FixedPairHit,"shader.fixed-pair-hit") X(QueryReuse,"query.reuse") \
     X(FixedSourceBuild,"shader.fixed-source-build") X(FixedVertexCacheHit,"shader.fixed-vs-cache-hit") \
-    X(BindingSubmit,"binding.submit") X(BindingSkip,"binding.skip") X(UploadDiscard,"upload.discard") X(UploadNoOverwrite,"upload.no-overwrite")
+    X(BindingSubmit,"binding.submit") X(BindingSkip,"binding.skip") X(UploadDiscard,"upload.discard") X(UploadNoOverwrite,"upload.no-overwrite") \
+    X(SamplerUnusedSkip,"sampler.unused-skip")
 enum class QkFacadeCounter {
 #define QK_COUNTER_ENUM(name, label) name,
     QK_FACADE_COUNTER_LIST(QK_COUNTER_ENUM)
@@ -125,7 +126,7 @@ public:
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3DBlob> code;
-    UINT sampledMask = 0;
+    UINT sampledMask = 0, samplerMask = 0;
     UINT builtinResource = 0;
     std::map<DWORD,ComPtr<ID3D11InputLayout>> layouts;
     ULONGLONG generation = 0;
@@ -184,6 +185,13 @@ class QkD3D11State
     std::map<std::string,FixedPair> m_fixedPairs; // 最多 128 个成功状态；不缓存失败。
     void InvalidateTransientCache();
     std::map<std::string,ComPtr<ID3D11SamplerState>> m_samplerCache;
+    // 等尺寸、不同资源的颜色复制专用对象，随设备包装释放；不改变逻辑格式。
+    ComPtr<QkFacadeShader> m_copyVS,m_copyPS;
+    ComPtr<ID3D11Buffer> m_copyConstants;
+    ComPtr<ID3D11BlendState> m_copyBlends[2];
+    INT m_copyOffset[4]={};
+    bool m_copyOffsetValid=false;
+    HRESULT CopyColorFast(QkSurfaceHandle *src,QkSurfaceHandle *dst,const RECT &a,const RECT &b);
     HRESULT Apply();
     HRESULT ApplyShaders();
     HRESULT InputLayout(QkFacadeShader *shader, ID3D11InputLayout **out);

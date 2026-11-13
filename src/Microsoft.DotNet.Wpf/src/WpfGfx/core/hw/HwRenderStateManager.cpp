@@ -4,6 +4,13 @@
 
 
 #include "precomp.hpp"
+#include "../common/s5i-interface-timing.h"
+// B 的接口诊断仅进入独立诊断产物；正式 B 与门面不增加此层探针。
+#if QUICKER_WPF_S5I_TIMING && !QUICKER_WPF_D3D11_FACADE
+#define QK_S5K_B_BIND(expr) QK_INTERFACE_CALL(DriverBindings,expr)
+#else
+#define QK_S5K_B_BIND(expr) (expr)
+#endif
 //------------------------------------------------------------------------------
 //
 
@@ -327,10 +334,10 @@ CHwRenderStateManager::ForceSetTexture(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetTexture(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetTexture(
         dwStage,
         pTexture
-        ));
+        )));
 
 Cleanup:
     m_textures.UpdateState(
@@ -367,11 +374,11 @@ CHwRenderStateManager::ForceSetTextureStageState(
         }
     }
 
-    IFC(m_pID3DDevice->SetTextureStageState(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetTextureStageState(
         dwStage,
         state,
         dwValue
-        ));
+        )));
 
 Cleanup:
     m_textureStageStates.UpdateState(
@@ -433,11 +440,11 @@ CHwRenderStateManager::ForceSetSamplerState(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetSamplerState(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetSamplerState(
         dwSampler,
         state,
         dwValue
-        ));
+        )));
 
 Cleanup:
     m_samplerStageStates.UpdateState(
@@ -464,9 +471,9 @@ CHwRenderStateManager::ForceSetFVF(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetFVF(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetFVF(
         dwFVF
-        ));
+        )));
 
 Cleanup:
     m_stateFVF.UpdateState(
@@ -493,9 +500,9 @@ CHwRenderStateManager::ForceSetVertexShader(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetVertexShader(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetVertexShader(
         pVertexShader
-        ));
+        )));
 
 Cleanup:
     m_stateVertexShader.UpdateState(
@@ -522,9 +529,9 @@ CHwRenderStateManager::ForceSetPixelShader(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetPixelShader(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetPixelShader(
         pPixelShader
-        ));
+        )));
 
 Cleanup:
     m_statePixelShader.UpdateState(
@@ -553,9 +560,9 @@ CHwRenderStateManager::ForceSetDepthStencilSurface(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetDepthStencilSurface(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetDepthStencilSurface(
         pDepthStencilSurface
-        ));
+        )));
 
     m_uDepthStencilSurfaceWidth = uWidth;
     m_uDepthStencilSurfaceHeight = uHeight;
@@ -586,10 +593,10 @@ CHwRenderStateManager::ForceSetRenderState(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetRenderState(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetRenderState(
         state,
         dwValue
-        ));
+        )));
 
 Cleanup:
     m_renderStates.UpdateState(
@@ -619,10 +626,10 @@ CHwRenderStateManager::ForceSetWorldTransform(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetTransform(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetTransform(
         D3DTS_WORLD,
         pMatrix
-        ));
+        )));
 
 Cleanup:
     m_worldTransform.UpdateState(
@@ -650,10 +657,10 @@ CHwRenderStateManager::ForceSetNonWorldTransform(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetTransform(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetTransform(
         state,
         pMatrix
-        ));
+        )));
 
 Cleanup:
     m_nonWorldTransforms.UpdateState(
@@ -717,11 +724,11 @@ CHwRenderStateManager::ForceSetPixelShaderConstantF(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetPixelShaderConstantF(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetPixelShaderConstantF(
         nRegisterIndex,
         prConstantData,
         nRegisterCount
-        ));
+        )));
 
 Cleanup:
     for (UINT i = 0; i < nRegisterCount; ++i)
@@ -780,11 +787,11 @@ CHwRenderStateManager::ForceSetPixelShaderConstantI(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetPixelShaderConstantI(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetPixelShaderConstantI(
         nRegisterIndex,
         pConstantData,
         1
-        ));
+        )));
 
 Cleanup:
     const int &int4 = reinterpret_cast<const int &>(pConstantData[0]);
@@ -837,11 +844,11 @@ CHwRenderStateManager::ForceSetPixelShaderConstantB(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetPixelShaderConstantB(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetPixelShaderConstantB(
         nRegisterIndex,
         &constantData,
         1
-        ));
+        )));
 
 Cleanup:
     m_statePixelShaderBoolConstants.UpdateState(
@@ -911,11 +918,11 @@ CHwRenderStateManager::ForceSetVertexShaderConstantF(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetVertexShaderConstantF(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetVertexShaderConstantF(
         nRegisterIndex,
         prConstantData,
         nRegisterCount
-        ));
+        )));
 
 Cleanup:
     for (UINT i = 0; i < nRegisterCount; ++i)
@@ -1018,7 +1025,7 @@ CHwRenderStateManager::SetScissorRect(
         Assert(rcScissor.left < rcScissor.right &&
                rcScissor.top < rcScissor.bottom);
 
-        MIL_THR(m_pID3DDevice->SetScissorRect(&rcScissor));
+        MIL_THR(QK_S5K_B_BIND(m_pID3DDevice->SetScissorRect(&rcScissor)));
         if (SUCCEEDED(hr))
         {
             m_rcScissorRect = *prc;
@@ -1405,9 +1412,9 @@ CHwRenderStateManager::SetViewport(
     vp.MinZ   = 0.0f;
     vp.MaxZ   = 1.0f;
 
-    IFC(m_pID3DDevice->SetViewport(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetViewport(
         &vp
-        ));
+        )));
 
 Cleanup:
     m_rcViewport = *prcViewport;
@@ -1430,12 +1437,12 @@ CHwRenderStateManager::ForceSetStreamSource(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetStreamSource(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetStreamSource(
         0,
         pStream,
         0,
         uVertexStride
-        ));
+        )));
 
 Cleanup:
     m_streamSourceVertexBuffer.UpdateState(
@@ -1467,9 +1474,9 @@ CHwRenderStateManager::ForceSetIndices(
 {
     HRESULT hr = S_OK;
 
-    IFC(m_pID3DDevice->SetIndices(
+    IFC(QK_S5K_B_BIND(m_pID3DDevice->SetIndices(
         pStream
-        ));
+        )));
 
 Cleanup:
     RRETURN(hr);
@@ -1839,7 +1846,7 @@ CHwRenderStateManager::SetDefaultState(
         //
         material.Power = 40.0f;
 
-        IFC(m_pID3DDevice->SetMaterial(&material));
+        IFC(QK_S5K_B_BIND(m_pID3DDevice->SetMaterial(&material)));
     }
 
     // Textures
@@ -1875,12 +1882,12 @@ CHwRenderStateManager::SetDefaultState(
 
     for (UINT uStreamNum = 1; uStreamNum < dwMaxStream; uStreamNum++)
     {
-        IFC(m_pID3DDevice->SetStreamSource(
+        IFC(QK_S5K_B_BIND(m_pID3DDevice->SetStreamSource(
             uStreamNum,
             NULL,
             0,
             0
-            ));
+            )));
     }
 
     IFC(ForceSetIndices(NULL));
