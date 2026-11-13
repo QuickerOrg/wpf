@@ -6,7 +6,37 @@
     X(Texture,"texture-api") X(Srv,"srv-api") X(Rtv,"rtv-api") X(Query,"query-api") \
     X(FixedSource,"fixed-source") X(ShaderLookup,"shader-lookup") X(ShaderCompile,"shader-compile") \
     X(Draw,"draw-submit") X(Apply,"draw-apply") X(Present,"present-api") X(Trace,"trace") \
-    X(TextureWrapper,"texture-wrapper") X(TextureRelease,"texture-release")
+    X(TextureWrapper,"texture-wrapper") X(TextureRelease,"texture-release") \
+    X(HwDraw,"draw.hw") \
+    X(ClearDraw,"draw.clear") \
+    X(BlitFormatDraw,"draw.blit-format") \
+    X(BlitScaleDraw,"draw.blit-scale") \
+    X(BlitPresentDraw,"draw.blit-present") \
+    X(BlitMipDraw,"draw.blit-mip") \
+    X(SizeUpload,"size-upload") \
+    X(RenderBindings,"render-bindings") \
+    X(ShaderApply,"shader-apply") \
+    X(ShaderBindings,"shader-bindings") \
+    X(ConstantUpload,"constant-upload") \
+    X(ConstantBindings,"constant-bindings") \
+    X(TextureBindings,"texture-bindings") \
+    X(SamplerApply,"sampler-apply") \
+    X(IaBindings,"ia-bindings") \
+    X(VertexUpload,"vertex-upload") \
+    X(CopyTotal,"copy-total") \
+    X(CopyNative,"copy-native") \
+    X(ClearTotal,"clear-total") \
+    X(PresentTotal,"present-total") \
+    X(PresentCopy,"present-copy") \
+    X(PresentRecord,"present-record") \
+    X(PresentGetDC,"present-getdc") \
+    X(PresentReleaseDC,"present-releasedc") \
+    X(PresentUlw,"present-ulw") \
+    X(TraceDebug,"trace-debug") \
+    X(HideTrim,"hide-trim") \
+    X(EntryIndexedUp,"entry.indexed-up") X(EntryIndexed,"entry.indexed") X(EntryList,"entry.list") \
+    X(EntryStrip,"entry.strip") X(EntryUp,"entry.up") X(ZeroDraw,"draw.zero") \
+    X(BlitXtoA,"blit.x-to-a") X(BlitAtoX,"blit.a-to-x") X(BlitOther,"blit.other")
 enum class QkInterfaceMetric {
 #define QK_METRIC_ENUM(n,s) n,
     QK_INTERFACE_METRICS(QK_METRIC_ENUM)

@@ -312,6 +312,8 @@ static std::string QkOperation(DWORD op,const std::string &a,const std::string &
 }
 HRESULT QkD3D11State::ApplyShaders()
 {
+    bool validBindings=m_bindingsValid && QkFacadeBindingCacheEnabled();
+    m_bindingsValid=false; // 中途验证失败时，下次必须完整恢复实际绑定。
     ComPtr<QkFacadeShader> vs=m_boundVS,ps=m_boundPS;
     if(vs && !ps) return QkFacadeUnimpl("Draw.mixedShaderStages");
     const UINT fixedCount=(m_fvf&D3DFVF_TEXCOUNT_MASK)>>D3DFVF_TEXCOUNT_SHIFT;
@@ -376,19 +378,28 @@ HRESULT QkD3D11State::ApplyShaders()
         }
     }
     ID3D11InputLayout *layout=nullptr; HRESULT hr=InputLayout(vs.Get(),&layout); if(FAILED(hr)) return hr;
-    context->IASetInputLayout(layout); context->VSSetShader(vs->vs.Get(),nullptr,0); context->PSSetShader(ps->ps.Get(),nullptr,0);
+    { QK_INTERFACE_SCOPE(ShaderBindings);
+    if(!validBindings || m_appliedLayout!=layout) { context->IASetInputLayout(layout);m_appliedLayout=layout; }
+    if(!validBindings || m_appliedVS!=vs->vs.Get()) { context->VSSetShader(vs->vs.Get(),nullptr,0);m_appliedVS=vs->vs.Get(); }
+    if(!validBindings || m_appliedPS!=ps->ps.Get()) { context->PSSetShader(ps->ps.Get(),nullptr,0);m_appliedPS=ps->ps.Get(); }
+    }
     for(UINT n=0;n<2;++n) {
-        // 绑定仍逐 Draw 恢复；只有字节变化才重命名常量存储。
+        // 常量内容的脏标记独立于绑定缓存；按原语义上传，不改浮点数据。
         bool &dirty=n?m_psDirty:m_vsDirty; if(!dirty) continue;
+        QK_INTERFACE_SCOPE(ConstantUpload);
         auto buffer=n?m_psConstants:m_vsConstants;
         D3D11_MAPPED_SUBRESOURCE map; hr=context->Map(buffer.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map); if(FAILED(hr)) return hr;
         memcpy(map.pData,n?m_psData:m_vsData,n?sizeof(m_psData):sizeof(m_vsData)); context->Unmap(buffer.Get(),0); dirty=false;
     }
+    if(!validBindings) { QK_INTERFACE_SCOPE(ConstantBindings);
     context->VSSetConstantBuffers(0,1,m_constants.GetAddressOf()); context->VSSetConstantBuffers(1,1,m_vsConstants.GetAddressOf());
     context->PSSetConstantBuffers(2,1,m_psConstants.GetAddressOf());
+    }
     for(UINT n=0;n<8;++n) {
+        QkInterfaceScope textureScope(QkInterfaceMetric::TextureBindings);
         ID3D11ShaderResourceView *srv=(ps->sampledMask&(1U<<n)) && m_textures[n]?m_textures[n]->srv.Get():nullptr;
-        if(srv && target) {
+        bool submitSrv=!validBindings || m_appliedSrvs[n]!=srv;
+        if(submitSrv && srv && target) {
             ComPtr<ID3D11Resource> rt,res; target->GetResource(&rt); srv->GetResource(&res);
             if(rt.Get()==res.Get()) {
                 D3D11_RENDER_TARGET_VIEW_DESC rd; target->GetDesc(&rd);
@@ -397,14 +408,20 @@ HRESULT QkD3D11State::ApplyShaders()
                    (rd.Texture2D.MipSlice>=sd.Texture2D.MostDetailedMip && rd.Texture2D.MipSlice-sd.Texture2D.MostDetailedMip<sd.Texture2D.MipLevels)) return E_INVALIDARG;
             }
         }
-        context->PSSetShaderResources(n,1,&srv);
-        D3D11_SAMPLER_DESC sd={}; auto &st=m_samplers[n];
+        if(submitSrv) { context->PSSetShaderResources(n,1,&srv);m_appliedSrvs[n]=srv; }
+        QkFacadeCount(submitSrv?QkFacadeCounter::BindingSubmit:QkFacadeCounter::BindingSkip);
+        textureScope.Stop();
+        QK_INTERFACE_SCOPE(SamplerApply);
+        auto &st=m_samplers[n];
         if(srv && st[D3DSAMP_SRGBTEXTURE]) return QkFacadeUnimpl("Sampler.sRGB");
         if((st[D3DSAMP_MINFILTER]!=D3DTEXF_POINT && st[D3DSAMP_MINFILTER]!=D3DTEXF_LINEAR) ||
            (st[D3DSAMP_MAGFILTER]!=D3DTEXF_POINT && st[D3DSAMP_MAGFILTER]!=D3DTEXF_LINEAR)) {
-            if(!srv) continue;
+            if(!srv) { m_samplerBindingKnown[n]=false;continue; }
             return QkFacadeUnimpl("Sampler.filter");
         }
+        auto &resolved=m_resolvedSamplers[n];
+        if(!QkFacadeBindingCacheEnabled() || !resolved || memcmp(st,m_resolvedSamplerData[n],sizeof(st))) {
+        D3D11_SAMPLER_DESC sd={};
         sd.Filter=static_cast<D3D11_FILTER>((st[D3DSAMP_MINFILTER]==D3DTEXF_LINEAR?0x10:0)|(st[D3DSAMP_MAGFILTER]==D3DTEXF_LINEAR?4:0)|(st[D3DSAMP_MIPFILTER]==D3DTEXF_LINEAR?1:0));
         sd.AddressU=static_cast<D3D11_TEXTURE_ADDRESS_MODE>(st[D3DSAMP_ADDRESSU]);
         sd.AddressV=static_cast<D3D11_TEXTURE_ADDRESS_MODE>(st[D3DSAMP_ADDRESSV]); sd.AddressW=D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -414,13 +431,20 @@ HRESULT QkD3D11State::ApplyShaders()
         memcpy(&sd.MipLODBias,&st[D3DSAMP_MIPMAPLODBIAS],sizeof(float));
         std::string key(reinterpret_cast<char*>(&sd),sizeof(sd)); auto f=m_samplerCache.find(key);
         if(f==m_samplerCache.end()) { ComPtr<ID3D11SamplerState> sampler; hr=device->CreateSamplerState(&sd,&sampler); if(FAILED(hr)) return hr; QkAccount(sampler.Get(),"sampler-state"); f=m_samplerCache.insert(std::make_pair(key,sampler)).first; }
-        context->PSSetSamplers(n,1,f->second.GetAddressOf());
+        resolved=f->second;memcpy(m_resolvedSamplerData[n],st,sizeof(st));
+        }
+        bool submitSampler=!validBindings || !m_samplerBindingKnown[n] || m_appliedSamplers[n]!=resolved.Get();
+        if(submitSampler) { context->PSSetSamplers(n,1,resolved.GetAddressOf());m_appliedSamplers[n]=resolved.Get();m_samplerBindingKnown[n]=true; }
+        QkFacadeCount(submitSampler?QkFacadeCounter::BindingSubmit:QkFacadeCounter::BindingSkip);
     }
+    m_bindingsValid=true;
     return S_OK;
 }
 
 HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter, bool presentClipping)
 {
+    QK_INTERFACE_SCOPE(CopyTotal);
+    QkFacadeBindingReset bindingReset(*this);
     if(!src || !dst || src->generation!=generation || dst->generation!=generation) return E_INVALIDARG;
     RECT a=srcRect?*srcRect:RECT{0,0,static_cast<LONG>(src->desc.Width),static_cast<LONG>(src->desc.Height)};
     RECT b=dstRect?*dstRect:RECT{0,0,static_cast<LONG>(dst->desc.Width),static_cast<LONG>(dst->desc.Height)};
@@ -443,6 +467,7 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     // 两者不是同一个 DXGI 类型组，不能用无返回值的 CopySubresourceRegion 静默丢弃复制。
     if(!presentClipping && sameSize && src->desc.Format==dst->desc.Format && srcNative.Format==dstNative.Format && src->texture.Get()!=dst->texture.Get()) {
         D3D11_BOX box={static_cast<UINT>(a.left),static_cast<UINT>(a.top),0,static_cast<UINT>(a.right),static_cast<UINT>(a.bottom),1};
+        QK_INTERFACE_SCOPE(CopyNative);
         context->CopySubresourceRegion(dst->texture.Get(),dst->mip,b.left,b.top,0,src->texture.Get(),src->mip,&box);
         QkFacadeTrace("QK-FACADE CopySubresourceRegion\n");
         return DeviceStatus();
@@ -478,6 +503,9 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
         u=x0/src->desc.Width;v=y0/src->desc.Height;u1=x1/src->desc.Width;v1=y1/src->desc.Height;
     }
     V vertices[]={{l,top,0,~0U,u,v},{right,top,0,~0U,u1,v},{l,bottom,0,~0U,u,v1},{right,bottom,0,~0U,u1,v1}};
+    QkInterfaceScope formatScope(src->desc.Format==D3DFMT_X8R8G8B8 && dst->desc.Format==D3DFMT_A8R8G8B8?QkInterfaceMetric::BlitXtoA:
+        src->desc.Format==D3DFMT_A8R8G8B8 && dst->desc.Format==D3DFMT_X8R8G8B8?QkInterfaceMetric::BlitAtoX:QkInterfaceMetric::BlitOther);
+    QkFacadeDrawKind drawKind(m_drawKind,presentClipping?4:!sameSize?3:src->texture.Get()==dst->texture.Get()?5:2);
     HRESULT hr=DrawUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V));
     if(SUCCEEDED(hr)) QkFacadeTrace("QK-FACADE shader blit\n");
     target=oldTarget;targetOpaque=oldOpaque;width=oldW;height=oldH;m_viewport=oldVP;m_fvf=oldFVF;m_boundVS=oldVS;m_boundPS=oldPS;m_textures[0]=oldTex;

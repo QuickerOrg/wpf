@@ -29,7 +29,8 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     X(WaitForVBlank,"wait-for-vblank") X(OutputLookup,"wait-for-vblank.output-lookup") \
     X(ShaderConvert,"shader.convert") X(ShaderCompile,"shader.compile") X(ShaderCacheHit,"shader.cache-hit") X(ShaderCacheMiss,"shader.cache-miss") \
     X(RtPoolHit,"rt-pool.hit") X(RtPoolMiss,"rt-pool.miss") X(RtPoolReturn,"rt-pool.return") X(RtPoolEvict,"rt-pool.evict") X(FixedPairHit,"shader.fixed-pair-hit") X(QueryReuse,"query.reuse") \
-    X(FixedSourceBuild,"shader.fixed-source-build") X(FixedVertexCacheHit,"shader.fixed-vs-cache-hit")
+    X(FixedSourceBuild,"shader.fixed-source-build") X(FixedVertexCacheHit,"shader.fixed-vs-cache-hit") \
+    X(BindingSubmit,"binding.submit") X(BindingSkip,"binding.skip") X(UploadDiscard,"upload.discard") X(UploadNoOverwrite,"upload.no-overwrite")
 enum class QkFacadeCounter {
 #define QK_COUNTER_ENUM(name, label) name,
     QK_FACADE_COUNTER_LIST(QK_COUNTER_ENUM)
@@ -142,7 +143,17 @@ class QkD3D11State
     LONG m_refs = 1;
     HMONITOR m_monitor = nullptr;
     ComPtr<ID3D11Buffer> m_constants, m_uploadVB, m_uploadIB;
-    UINT m_vbCapacity = 0, m_ibCapacity = 0;
+    UINT m_vbCapacity = 0, m_ibCapacity = 0, m_vbCursor = 0;
+    // 实际上下文绑定的弱身份；每次设备进入、显式解绑和 Copy 前后失效，不额外持有纹理。
+    bool m_bindingsValid=false,m_iaValid=false;
+    ID3D11InputLayout *m_appliedLayout=nullptr;
+    ID3D11VertexShader *m_appliedVS=nullptr; ID3D11PixelShader *m_appliedPS=nullptr;
+    bool m_samplerBindingKnown[8]={};
+    ID3D11ShaderResourceView *m_appliedSrvs[8]={}; ID3D11SamplerState *m_appliedSamplers[8]={};
+    ID3D11Buffer *m_appliedVB=nullptr,*m_appliedIB=nullptr;
+    UINT m_appliedStride=0,m_appliedOffset=0;
+    DWORD m_resolvedSamplerData[8][14]={};
+    ComPtr<ID3D11SamplerState> m_resolvedSamplers[8];
     ComPtr<ID3D11Buffer> m_boundVB, m_boundIB;
     UINT m_stride = 0, m_offset = 0;
     DWORD m_fvf = 0;
@@ -162,6 +173,7 @@ class QkD3D11State
     float m_vsData[256][4] = {}, m_psData[224][4] = {};
     bool m_loggedFirstPresent = false;
     bool m_vsDirty = true, m_psDirty = true, m_sizeValid = false;
+    UINT m_drawKind = 0; // 仅诊断分类：原 hw、清屏、格式/缩放/呈现/mip blit。
     float m_sizeData[4] = {};
     ComPtr<QkFacadeShader> m_boundVS, m_boundPS;
     ComPtr<QkTextureHandle> m_textures[8];
@@ -176,7 +188,7 @@ class QkD3D11State
     HRESULT ApplyShaders();
     HRESULT InputLayout(QkFacadeShader *shader, ID3D11InputLayout **out);
 
-    HRESULT Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes);
+    HRESULT Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes, UINT *offset=nullptr);
 public:
     ComPtr<ID3D11Device> device;
     HRESULT WaitForVBlank();
@@ -187,6 +199,7 @@ public:
     DXGI_ADAPTER_DESC adapter = {};
     UINT width = 0, height = 0;
     static HRESULT Create(HMONITOR monitor, QkD3D11State **out);
+    void InvalidateBindings() { m_bindingsValid=false;m_iaValid=false; }
     HRESULT Initialize();
     ~QkD3D11State();
     // 全部共享设备入口串行；各显示器保留独立上下文状态和原 WPF 包装语义。

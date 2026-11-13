@@ -3379,6 +3379,7 @@ CD3DDeviceLevel1::Present(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
+    QK_INTERFACE_SCOPE(PresentTotal);
     m_facade->ExperimentRemoval();
     QkFacadeCount(QkFacadeCounter::PresentAttempt);
     if (FAILED(m_hrDisplayInvalid) || FAILED(m_facade->DeviceStatus())) {
@@ -3411,6 +3412,7 @@ CD3DDeviceLevel1::Present(
         ComPtr<ID3D11Texture2D> buffer;
         HRESULT hr=pD3DSwapChain->m_facadeSwapChain->GetBuffer(0,IID_PPV_ARGS(&buffer));
         if(FAILED(hr)) return hr;
+        QkInterfaceScope presentCopyScope(QkInterfaceMetric::PresentCopy);
         ComPtr<ID3D11Texture2D> presentTarget=buffer;
         if(transformed || pD3DSwapChain->m_facadePresentHistory) {
             if(!pD3DSwapChain->m_facadePresentHistory) {
@@ -3463,6 +3465,7 @@ CD3DDeviceLevel1::Present(
         }
         DXGI_PRESENT_PARAMETERS params={}; params.DirtyRectsCount=static_cast<UINT>(dirty.size()); params.pDirtyRects=dirty.empty()?nullptr:dirty.data();
         LONGLONG presentStarted=QkFacadeClock();
+        presentCopyScope.Stop();
         hr=QK_INTERFACE_CALL(Present,pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
             (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params));
         QkFacadeTiming("Present1",presentStarted,hr,pD3DSwapChain->m_facadeSyncInterval);
@@ -3890,7 +3893,7 @@ CD3DDeviceLevel1::PresentWithGDI(
 #if QUICKER_WPF_D3D11_FACADE
     *pfPresentProcessed=false; CD3DSurface *surface=nullptr;
     HRESULT hr=pD3DSwapChain->GetBackBuffer(0,&surface); if(FAILED(hr))return hr;
-    HDC dc=nullptr; hr=surface->GetDC(&dc);
+    HDC dc=nullptr; hr=QK_INTERFACE_CALL(PresentGetDC,surface->GetDC(&dc));
     if(SUCCEEDED(hr)) {
         if(pD3DSwapChain->m_facadeGdiPresent && !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) {
             // GDI 只搬运 GPU 已绘制的像素；遵守原窗口目标的源/目标矩形，不更改 HWND 样式。
@@ -3901,7 +3904,7 @@ CD3DDeviceLevel1::PresentWithGDI(
             hr=front?(BitBlt(front,dest.left,dest.top,source.right-source.left,source.bottom-source.top,dc,source.left,source.top,SRCCOPY)?S_OK:HRESULT_FROM_WIN32(GetLastError())):HRESULT_FROM_WIN32(GetLastError());
             if(front) ::ReleaseDC(pMILDC->GetHWND(),front);
             QkFacadeTiming("GpuGdiPresent",started,hr);
-            HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr)) hr=release;
+            HRESULT release=QK_INTERFACE_CALL(PresentReleaseDC,surface->ReleaseDC(dc)); if(SUCCEEDED(hr)) hr=release;
             surface->Release(); *pfPresentProcessed=SUCCEEDED(hr);
             if(SUCCEEDED(hr)) { QkFacadeCount(QkFacadeCounter::PresentGpuGdi); QkFacadeTrace("QK-FACADE Present GPU-GDI\n"); hr=m_facade->RecordPresent(); }
             return hr;
@@ -3913,9 +3916,9 @@ CD3DDeviceLevel1::PresentWithGDI(
         info.pptDst=&pMILDC->GetPosition(); info.psize=&size; info.hdcSrc=dc; info.pptSrc=&src;
         info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=pMILDC->GetULWFlags();
         LONGLONG ulwStarted=QkFacadeClock();
-        hr=UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError());
+        hr=QK_INTERFACE_CALL(PresentUlw,(UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError())));
         QkFacadeTiming("UpdateLayeredWindowIndirect",ulwStarted,hr);
-        HRESULT release=surface->ReleaseDC(dc); if(SUCCEEDED(hr))hr=release;
+        HRESULT release=QK_INTERFACE_CALL(PresentReleaseDC,surface->ReleaseDC(dc)); if(SUCCEEDED(hr))hr=release;
         *pfPresentProcessed=SUCCEEDED(hr);
         if(SUCCEEDED(hr)) { QkFacadeCount(QkFacadeCounter::PresentUlw); QkFacadeTrace("QK-FACADE Present ULW\n"); hr=m_facade->RecordPresent(); }
     }
@@ -5776,6 +5779,7 @@ CD3DDeviceLevel1::DrawIndexedTriangleListUP(
     __range(1, UINT_MAX) UINT uVertexStreamZeroStride
     )
 {
+    QK_INTERFACE_SCOPE(EntryIndexedUp);
 #if QUICKER_WPF_D3D11_FACADE
     return m_facade->DrawIndexedUP(uNumVertices,uPrimitiveCount,pIndexData,pVertexStreamZeroData,uVertexStreamZeroStride);
 #else
@@ -5965,6 +5969,7 @@ CD3DDeviceLevel1::DrawIndexedTriangleList(
     UINT cPrimitives
     )
 {
+    QK_INTERFACE_SCOPE(EntryIndexed);
 #if QUICKER_WPF_D3D11_FACADE
     return m_facade->DrawIndexed(cPrimitives*3,uStartIndex,static_cast<INT>(uBaseVertexIndex));
 #else
@@ -6004,6 +6009,7 @@ CD3DDeviceLevel1::DrawTriangleList(
     UINT cPrimitives
     )
 {
+    QK_INTERFACE_SCOPE(EntryList);
 #if QUICKER_WPF_D3D11_FACADE
     return m_facade->Draw(D3DPT_TRIANGLELIST,cPrimitives*3,uStartVertex);
 #else
@@ -6040,6 +6046,7 @@ CD3DDeviceLevel1::DrawTriangleStrip(
     UINT cPrimitives
     )
 {
+    QK_INTERFACE_SCOPE(EntryStrip);
 #if QUICKER_WPF_D3D11_FACADE
     return m_facade->Draw(D3DPT_TRIANGLESTRIP,cPrimitives+2,uStartVertex);
 #else
@@ -6281,6 +6288,7 @@ CD3DDeviceLevel1::DrawPrimitiveUP(
     UINT uVertexStreamZeroStride
     )
 {
+    QK_INTERFACE_SCOPE(EntryUp);
 #if QUICKER_WPF_D3D11_FACADE
     return m_facade->DrawUP(primitiveType,uPrimitiveCount,pVertexStreamZeroData,uVertexStreamZeroStride);
 #else

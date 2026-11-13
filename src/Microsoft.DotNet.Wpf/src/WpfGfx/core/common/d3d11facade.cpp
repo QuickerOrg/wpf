@@ -26,10 +26,41 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     DWORD written; WriteFile(file,line,static_cast<DWORD>(strlen(line)),&written,nullptr);CloseHandle(file);
 }
 
+// 分类只覆盖一次实际 Draw，嵌套调用退出时恢复，不改变绘制顺序。
+struct QkFacadeBindingReset {
+    QkD3D11State &state;
+    explicit QkFacadeBindingReset(QkD3D11State &value):state(value) { state.InvalidateBindings(); }
+    ~QkFacadeBindingReset() { state.InvalidateBindings(); }
+};
+struct QkFacadeDrawKind {
+    UINT &slot; UINT saved;
+    QkFacadeDrawKind(UINT &value, UINT kind):slot(value),saved(value) { slot=kind; }
+    ~QkFacadeDrawKind() { slot=saved; }
+};
+// 消融开关只在进程启动时读取；正式 B 不编译此文件。
+static bool QkFacadeVertexRingEnabled() {
+    static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_VERTEX_RING",v,2)==1 && v[0]==L'1');}();return enabled;
+}
+static bool QkFacadeBindingCacheEnabled() {
+    static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_BINDING_CACHE",v,2)==1 && v[0]==L'1');}();return enabled;
+}
 void QkFacadeTrace(const char *line)
 {
+    static const bool enabled=[]() {
+        WCHAR value[2]={};
+        DWORD n=GetEnvironmentVariableW(L"QUICKER_FACADE_TRACE",value,2);
+        if(n==1) return value[0]==L'1';
+        if(GetEnvironmentVariableW(L"QUICKER_FACADE_LOG",nullptr,0)) return true;
+#if DBG
+        return true;
+#else
+        return false;
+#endif
+    }();
+    // 缺口及软件后备仍显式报告；Release 的逐 Draw trace 默认关闭。
+    if(!enabled && strncmp(line,"QK-FACADE-UNIMPL",16)!=0 && !strstr(line,"software fallback")) return;
     QK_INTERFACE_SCOPE(Trace);
-    OutputDebugStringA(line);
+    { QK_INTERFACE_SCOPE(TraceDebug); OutputDebugStringA(line); }
     WCHAR path[32768] = {};
     DWORD n = GetEnvironmentVariableW(L"QUICKER_FACADE_LOG", path, ARRAYSIZE(path));
     if (!n || n >= ARRAYSIZE(path)) return;
@@ -155,7 +186,7 @@ void QkD3D11State::EnterState(QkD3D11State *state) {
     auto prior=state?qkActiveStates[state->context.Get()]:nullptr;
     if(prior) prior->AddRef();
     qkEntryStack.push_back(prior);
-    if(state) state->Activate();
+    if(state) { state->InvalidateBindings(); state->Activate(); }
 }
 void QkD3D11State::LeaveState() {
     auto prior=qkEntryStack.back(); qkEntryStack.pop_back();
@@ -170,6 +201,7 @@ void QkD3D11State::RetireMediaTexture(QkTextureHandle *texture)
         for (UINT slot = 0; slot < ARRAYSIZE(state->m_textures); ++slot) {
             if (state->m_textures[slot].Get() != texture) continue;
             if (!entered) { EnterState(state); entered = true; }
+            state->InvalidateBindings();
             state->m_textures[slot].Reset();
             ID3D11ShaderResourceView *empty = nullptr;
             state->context->PSSetShaderResources(slot, 1, &empty);
@@ -199,6 +231,7 @@ void QkD3D11State::TrimIfIdle()
 {
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     if(qkPresentSerial==qkTrimmedSerial) return;
+    QK_INTERFACE_SCOPE(HideTrim);
     bool visible=false;
     EnumWindows([](HWND hwnd,LPARAM arg)->BOOL {
         DWORD pid=0; GetWindowThreadProcessId(hwnd,&pid);
@@ -422,6 +455,7 @@ HRESULT QkD3D11State::CreateBuffer(UINT bytes, UINT bind, QkFacadeBuffer **out)
 }
 HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque)
 {
+    InvalidateBindings();
     ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty);
     target = rtv; width = w; height = h; targetOpaque = opaque;
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
@@ -429,6 +463,7 @@ HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bo
 }
 HRESULT QkD3D11State::RecordPresent()
 {
+    QK_INTERFACE_SCOPE(PresentRecord);
     if(!m_loggedFirstPresent) {
         char line[180];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE first-present generation=%llu tick=%llu thread=%lu\n",generation,GetTickCount64(),GetCurrentThreadId());
         QkFacadeTrace(line);m_loggedFirstPresent=true;
@@ -605,10 +640,12 @@ HRESULT QkD3D11State::Apply()
     HRESULT hr=S_OK;
     float size[4] = {static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y)};
     if(!m_sizeValid || memcmp(size,m_sizeData,sizeof(size))) {
+        QK_INTERFACE_SCOPE(SizeUpload);
         hr=context->Map(m_constants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map); if(FAILED(hr)) return hr;
         memcpy(map.pData,size,sizeof(size)); context->Unmap(m_constants.Get(),0);
         memcpy(m_sizeData,size,sizeof(size)); m_sizeValid=true;
     }
+    { QK_INTERFACE_SCOPE(RenderBindings);
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     DWORD blend=m_states[D3DRS_BLENDFACTOR];
     float factor[]={((blend>>16)&255)/255.f,((blend>>8)&255)/255.f,(blend&255)/255.f,(blend>>24)/255.f};
@@ -618,9 +655,16 @@ HRESULT QkD3D11State::Apply()
     context->RSSetScissorRects(1, &m_scissor);
     D3D11_VIEWPORT vp = {static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y), static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), m_viewport.MinZ, m_viewport.MaxZ};
     context->RSSetViewports(1, &vp);
-    hr=ApplyShaders(); if(FAILED(hr)) return hr;
-    context->IASetVertexBuffers(0, 1, m_boundVB.GetAddressOf(), &m_stride, &m_offset);
-    context->IASetIndexBuffer(m_boundIB.Get(), DXGI_FORMAT_R16_UINT, 0);
+    }
+    { QK_INTERFACE_SCOPE(ShaderApply); hr=ApplyShaders(); } if(FAILED(hr)) return hr;
+    QK_INTERFACE_SCOPE(IaBindings);
+    bool valid=m_iaValid && QkFacadeBindingCacheEnabled();
+    if(!valid || m_appliedVB!=m_boundVB.Get() || m_appliedStride!=m_stride || m_appliedOffset!=m_offset) {
+        context->IASetVertexBuffers(0,1,m_boundVB.GetAddressOf(),&m_stride,&m_offset);
+        m_appliedVB=m_boundVB.Get();m_appliedStride=m_stride;m_appliedOffset=m_offset;
+    }
+    if(!valid || m_appliedIB!=m_boundIB.Get()) { context->IASetIndexBuffer(m_boundIB.Get(),DXGI_FORMAT_R16_UINT,0);m_appliedIB=m_boundIB.Get(); }
+    m_iaValid=true;
     return S_OK;
 }
 HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
@@ -628,28 +672,44 @@ HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
     if (type != D3DPT_TRIANGLELIST && type != D3DPT_TRIANGLESTRIP && type != D3DPT_LINELIST) return QkFacadeUnimpl("Draw.topology");
     HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
     context->IASetPrimitiveTopology(type == D3DPT_TRIANGLELIST ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : type == D3DPT_TRIANGLESTRIP ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-    { QK_INTERFACE_SCOPE(Draw); context->Draw(vertices, start); }
+    if(!vertices) { QK_INTERFACE_SCOPE(ZeroDraw); }
+    { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); context->Draw(vertices, start); }
     QkFacadeTrace("QK-FACADE Draw original-hw\n");
     return DeviceStatus();
 }
 HRESULT QkD3D11State::DrawIndexed(UINT indices, UINT startIndex, INT baseVertex)
 {
     HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); { QK_INTERFACE_SCOPE(Draw); context->DrawIndexed(indices, startIndex, baseVertex); }
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); context->DrawIndexed(indices, startIndex, baseVertex); }
     QkFacadeTrace("QK-FACADE DrawIndexed original-hw\n");
     return DeviceStatus();
 }
-HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes)
+HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes, UINT *offset)
 {
-    if (bytes > capacity)
+    bool ring=offset && QkFacadeVertexRingEnabled();
+    UINT required=ring?max(bytes,16384U):bytes;
+    if (required > capacity)
     {
+        m_vbCursor=0;
         D3D11_BUFFER_DESC bd = {}; // UP 通常只传几个顶点；WRITE_DISCARD 的重命名以整个容量计费。
         // 按实际上传量增长，避免为每次小绘制重命名至少 1 MiB。
-        bd.ByteWidth = max(bytes, 256U); bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        bd.ByteWidth = max(required, 256U); bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         buffer.Reset(); HRESULT hr = device->CreateBuffer(&bd, nullptr, &buffer); if (FAILED(hr)) return hr; capacity = bd.ByteWidth; QkAccount(buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"upload-VB":"upload-IB",bd.ByteWidth);
     }
-    D3D11_MAPPED_SUBRESOURCE map; HRESULT hr = context->Map(buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
-    if (FAILED(hr)) return hr; memcpy(map.pData, data, bytes); context->Unmap(buffer.Get(), 0); return S_OK;
+    QK_INTERFACE_SCOPE(VertexUpload);
+    UINT position=0;
+    if(ring && m_vbCursor<=capacity && capacity-m_vbCursor>=15) {
+        position=(m_vbCursor+15)&~15U;
+        if(bytes>capacity-position) position=0;
+    }
+    D3D11_MAP mode=position?D3D11_MAP_WRITE_NO_OVERWRITE:D3D11_MAP_WRITE_DISCARD;
+    D3D11_MAPPED_SUBRESOURCE map; HRESULT hr=context->Map(buffer.Get(),0,mode,0,&map);
+    if(FAILED(hr)) return hr;
+    memcpy(static_cast<BYTE*>(map.pData)+position,data,bytes);context->Unmap(buffer.Get(),0);
+    if(offset) *offset=position;
+    if(ring) m_vbCursor=position+bytes;
+    QkFacadeCount(position?QkFacadeCounter::UploadNoOverwrite:QkFacadeCounter::UploadDiscard);
+    return S_OK;
 }
 HRESULT QkD3D11State::DrawUP(D3DPRIMITIVETYPE type, UINT primitives, const void *data, UINT stride)
 {
@@ -657,10 +717,11 @@ HRESULT QkD3D11State::DrawUP(D3DPRIMITIVETYPE type, UINT primitives, const void 
     UINT count = type == D3DPT_TRIANGLELIST ? primitives*3 : type == D3DPT_LINELIST ? primitives*2 : primitives+2;
     if (count > UINT_MAX/stride) return E_INVALIDARG;
     if (type == D3DPT_TRIANGLEFAN && count > 65536) return QkFacadeUnimpl("DrawUP.largeFan");
-    HRESULT hr = Upload(m_uploadVB, m_vbCapacity, D3D11_BIND_VERTEX_BUFFER, data, count*stride); if (FAILED(hr)) return hr;
+    UINT vertexOffset=0;
+    HRESULT hr = Upload(m_uploadVB, m_vbCapacity, D3D11_BIND_VERTEX_BUFFER, data, count*stride,&vertexOffset); if (FAILED(hr)) return hr;
     auto savedVB = m_boundVB; auto savedIB = m_boundIB;
     UINT savedStride = m_stride, savedOffset = m_offset;
-    m_boundVB = m_uploadVB; m_stride = stride; m_offset = 0;
+    m_boundVB = m_uploadVB; m_stride = stride; m_offset = vertexOffset;
     if (type == D3DPT_TRIANGLEFAN)
     {
         std::vector<WORD> indices(primitives*3);
@@ -676,17 +737,20 @@ HRESULT QkD3D11State::DrawUP(D3DPRIMITIVETYPE type, UINT primitives, const void 
 HRESULT QkD3D11State::DrawIndexedUP(UINT vertices, UINT primitives, const WORD *indices, const void *data, UINT stride)
 {
     if (!indices || !data || !stride || vertices > UINT_MAX/stride || primitives > UINT_MAX/(3*sizeof(WORD))) return E_INVALIDARG;
-    HRESULT hr = Upload(m_uploadVB, m_vbCapacity, D3D11_BIND_VERTEX_BUFFER, data, vertices*stride); if (FAILED(hr)) return hr;
+    UINT vertexOffset=0;
+    HRESULT hr = Upload(m_uploadVB, m_vbCapacity, D3D11_BIND_VERTEX_BUFFER, data, vertices*stride,&vertexOffset); if (FAILED(hr)) return hr;
     hr = Upload(m_uploadIB, m_ibCapacity, D3D11_BIND_INDEX_BUFFER, indices, primitives*3*sizeof(WORD)); if (FAILED(hr)) return hr;
     auto savedVB = m_boundVB; auto savedIB = m_boundIB;
     UINT savedStride = m_stride, savedOffset = m_offset;
-    m_boundVB = m_uploadVB; m_boundIB = m_uploadIB; m_stride = stride; m_offset = 0;
+    m_boundVB = m_uploadVB; m_boundIB = m_uploadIB; m_stride = stride; m_offset = vertexOffset;
     hr = DrawIndexed(primitives*3, 0, 0);
     m_boundVB = savedVB; m_boundIB = savedIB; m_stride = savedStride; m_offset = savedOffset;
     return hr;
 }
 HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT *rects)
 {
+    QK_INTERFACE_SCOPE(ClearTotal);
+    QkFacadeDrawKind drawKind(m_drawKind,1);
     if (flags != D3DCLEAR_TARGET) return QkFacadeUnimpl("Clear.depthStencil");
     if (!target) return E_UNEXPECTED;
     float rgba[] = {((color>>16)&255)/255.f, ((color>>8)&255)/255.f, (color&255)/255.f, (color>>24)/255.f};
