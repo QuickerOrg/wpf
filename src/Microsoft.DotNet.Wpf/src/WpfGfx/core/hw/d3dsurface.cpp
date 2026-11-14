@@ -227,6 +227,8 @@ CD3DSurface::GetDC(
 #if QUICKER_WPF_D3D11_FACADE
     *phdc=nullptr; auto state=Device().Facade();
     QkFacadeCount(QkFacadeCounter::GetDC);
+    if(m_pD3DSurface && m_pD3DSurface->opaqueState) m_pD3DSurface->opaqueState->alphaKnownOpaque=false;
+    state->InvalidateBindings();
     state->context->OMSetRenderTargets(0,nullptr,nullptr);
     return m_facadeGDI->GetDC(FALSE,phdc);
 #else
@@ -545,7 +547,13 @@ HRESULT CD3DSurface::CreateFacade(CD3DResourceManager *manager,QkD3D11State *sta
     if(SUCCEEDED(hr)) QkAccount(s->m_facadeRTV.Get(),"RTV");
     if(SUCCEEDED(hr) && format==D3DFMT_X8R8G8B8) {
         // D3D9 XRGB 读取 Alpha 为 1，且任何绘图均不能改变它。
-        const float opaqueBlack[4]={0,0,0,1}; state->context->ClearRenderTargetView(s->m_facadeRTV.Get(),opaqueBlack);
+        D3D11_TEXTURE2D_DESC actual={}; s->m_facadeTexture->GetDesc(&actual);
+        if(actual.Format!=DXGI_FORMAT_B8G8R8A8_UNORM || actual.MipLevels!=1 || actual.ArraySize!=1 || actual.Width!=width || actual.Height!=height) hr=E_INVALIDARG;
+        else {
+            handle->opaqueState=std::make_shared<QkOpaqueState>();
+            const float opaqueBlack[4]={0,0,0,1}; state->context->ClearRenderTargetView(s->m_facadeRTV.Get(),opaqueBlack);
+            hr=state->DeviceStatus(); handle->opaqueState->alphaKnownOpaque=SUCCEEDED(hr);
+        }
     }
     if(SUCCEEDED(hr)) hr=s->m_facadeTexture.As(&s->m_facadeGDI);
     if(FAILED(hr)){s->Release();return hr;}

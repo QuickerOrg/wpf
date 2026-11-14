@@ -338,7 +338,7 @@ public:
         __in_ecount(1) const D3DSURFACE_DESC *pSurfDesc,
         UINT uLevels,
         __deref_out_ecount(1) QkTextureHandle ** const ppD3DTexture,
-        __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle = NULL
+        __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle = NULL QK_PURPOSE_DEFAULT
         );
 
     HRESULT CreatePixelShaderFromResource(

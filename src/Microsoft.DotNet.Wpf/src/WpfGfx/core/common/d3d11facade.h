@@ -31,7 +31,11 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     X(RtPoolHit,"rt-pool.hit") X(RtPoolMiss,"rt-pool.miss") X(RtPoolReturn,"rt-pool.return") X(RtPoolEvict,"rt-pool.evict") X(FixedPairHit,"shader.fixed-pair-hit") X(QueryReuse,"query.reuse") \
     X(FixedSourceBuild,"shader.fixed-source-build") X(FixedVertexCacheHit,"shader.fixed-vs-cache-hit") \
     X(BindingSubmit,"binding.submit") X(BindingSkip,"binding.skip") X(UploadDiscard,"upload.discard") X(UploadNoOverwrite,"upload.no-overwrite") \
-    X(SamplerUnusedSkip,"sampler.unused-skip")
+    X(SamplerUnusedSkip,"sampler.unused-skip") \
+    X(LayerNativeCopy,"layer.native-copy") X(LayerFallbackSourceUnknown,"layer.blit.source-unknown") \
+    X(LayerFallbackFormat,"layer.blit.physical-format") X(LayerFallbackSize,"layer.blit.size") \
+    X(LayerFallbackSameResource,"layer.blit.same-resource") X(LayerFallbackPresent,"layer.blit.present") X(LayerFallbackOther,"layer.blit.other") \
+    X(LayerInitialize,"layer.initialize") X(LayerUploadRejected,"layer.upload-rejected") X(LayerAlphaViolation,"layer.alpha-violation")
 enum class QkFacadeCounter {
 #define QK_COUNTER_ENUM(name, label) name,
     QK_FACADE_COUNTER_LIST(QK_COUNTER_ENUM)
@@ -65,6 +69,17 @@ using QkVertexBufferHandle = QkTypedBuffer<0>;
 using QkIndexBufferHandle = QkTypedBuffer<1>;
 
 // 纹理与 mip 视图共同持有资源；CPU 锁定镜像仅用于位图/渐变上传。
+enum class QkTexturePurpose { Ordinary, LayerBackground };
+// 仅 CreateFacade 的 XRGB 和单 mip 层背景拥有状态；别名和池租约共持同一对象。
+struct QkOpaqueState {
+    bool alphaKnownOpaque=false;
+    // 仅诊断启用；跟随实际分配跨 surface 重包装复用，暖态不新建读回资源。
+    ComPtr<ID3D11Texture2D> validationStaging;
+};
+bool QkLayerNativeCopyEnabled();
+#define QK_PURPOSE_DEFAULT , QkTexturePurpose purpose = QkTexturePurpose::Ordinary
+#define QK_PURPOSE_PARAMETER , QkTexturePurpose purpose
+#define QK_PURPOSE_ARGUMENT(value) , value
 struct QkTransientPool;
 struct QkTransientLease;
 class QkTextureHandle;
@@ -73,6 +88,8 @@ class QkSurfaceHandle
     LONG m_refs = 1;
 public:
     std::shared_ptr<QkTransientLease> transientLease;
+    std::shared_ptr<QkOpaqueState> opaqueState;
+    QkTexturePurpose purpose=QkTexturePurpose::Ordinary;
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11RenderTargetView> rtv;
     ComPtr<ID3D11ShaderResourceView> srv;
@@ -102,6 +119,8 @@ class QkTextureHandle
     LONG m_refs = 1;
 public:
     std::shared_ptr<QkTransientLease> transientLease;
+    std::shared_ptr<QkOpaqueState> opaqueState;
+    QkTexturePurpose purpose=QkTexturePurpose::Ordinary;
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11ShaderResourceView> srv;
     ComPtr<ID3D11DeviceContext> context;
@@ -220,7 +239,10 @@ public:
     static void RetireMediaTexture(QkTextureHandle *texture);
     ComPtr<ID3DDeviceContextState> savedContext;
     ComPtr<ID3D11DeviceContext1> context1;
-    HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out);
+    HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out, QkTexturePurpose purpose=QkTexturePurpose::Ordinary);
+    HRESULT PrepareLayerBackground(QkTextureHandle *texture);
+    HRESULT ValidateLayerBackground(QkTextureHandle *texture);
+    void MarkUnusable() { removedReason=WGXERR_DISPLAYSTATEINVALID; InvalidateTransientCache(); }
     HRESULT Compile(const char *source, UINT bytes, bool vertex, QkFacadeShader **out);
     HRESULT Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHandle *dst,const RECT *dstRect,D3DTEXTUREFILTERTYPE filter, bool presentClipping = false);
 
@@ -244,8 +266,9 @@ public:
         typed->buffer = base->buffer; typed->context = base->context; typed->size = base->size; typed->generation = base->generation;
         base->Release(); *out = typed; return S_OK;
     }
-    HRESULT BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque = false);
+    HRESULT BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque = false, std::shared_ptr<QkOpaqueState> opaqueState = nullptr);
     bool targetOpaque = false;
+    std::shared_ptr<QkOpaqueState> targetOpaqueState;
     HRESULT RecordPresent();
     HRESULT GetNumQueuedPresents(UINT *count);
     HRESULT Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start);
@@ -275,6 +298,9 @@ public:
 
 HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *luid);
 #else
+#define QK_PURPOSE_DEFAULT
+#define QK_PURPOSE_PARAMETER
+#define QK_PURPOSE_ARGUMENT(value)
 using QkTextureHandle = IDirect3DTexture9;
 using QkBaseTextureHandle = IDirect3DBaseTexture9;
 using QkSurfaceHandle = IDirect3DSurface9;

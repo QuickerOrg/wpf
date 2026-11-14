@@ -215,6 +215,9 @@ CHwDestinationTexture::SendDeviceStates(
         dwSampler
         ));
 
+    #if QUICKER_WPF_D3D11_FACADE
+    IFC(m_pDevice->Facade()->ValidateLayerBackground(m_pBackgroundTexture->GetD3DTextureNoRef()));
+#endif
     IFC(m_pDevice->SetTexture(dwSampler, m_pBackgroundTexture));
 
 Cleanup:
@@ -493,6 +496,7 @@ CHwDestinationTexture::SetContents(
                 m_pDevice,
                 &m_pBackgroundTexture,
                 /* HANDLE *pSharedHandle */ NULL
+                QK_PURPOSE_ARGUMENT(sdLevel0.Format==D3DFMT_X8R8G8B8?QkTexturePurpose::LayerBackground:QkTexturePurpose::Ordinary)
                 ));
 
             //
@@ -511,6 +515,10 @@ CHwDestinationTexture::SetContents(
     }
 
 
+#if QUICKER_WPF_D3D11_FACADE
+    // 整次捕获第一段之前建立不变量；上层/底层池的健康复用不重复清屏。
+    IFC(m_pDevice->Facade()->PrepareLayerBackground(m_pBackgroundTexture->GetD3DTextureNoRef()));
+#endif
 #if DBG
     //
     // At this point we cannot expect the surface to contain anything useful

@@ -230,8 +230,20 @@ QkD3D11State::~QkD3D11State() {
     LeaveShared();
 }
 
+static bool QkLayerDiagnosticFlag(const wchar_t *name)
+{
+    WCHAR value[4]={}; return GetEnvironmentVariableW(name,value,ARRAYSIZE(value))==1 && value[0]==L'1';
+}
+bool QkLayerNativeCopyEnabled()
+{
+    // S5l 正式 ARM 收益未达到停止线，默认保留 S5k；仅显式实验 opt-in 启用。
+    static const bool enabled=QkLayerDiagnosticFlag(L"QUICKER_FACADE_ENABLE_LAYER_NATIVE_COPY") &&
+        !QkLayerDiagnosticFlag(L"QUICKER_FACADE_DISABLE_LAYER_NATIVE_COPY"); return enabled;
+}
 void QkD3D11State::TrimIfIdle()
 {
+    static const bool disabled=QkLayerDiagnosticFlag(L"QUICKER_FACADE_DISABLE_HIDE_TRIM");
+    if(disabled) return;
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     if(qkPresentSerial==qkTrimmedSerial) return;
     QK_INTERFACE_SCOPE(HideTrim);
@@ -456,11 +468,11 @@ HRESULT QkD3D11State::CreateBuffer(UINT bytes, UINT bind, QkFacadeBuffer **out)
     QkAccount(b->buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"dynamic-VB":"dynamic-IB",bytes);
     b->context = context; b->size = bytes; b->generation = generation; *out = b; return S_OK;
 }
-HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque)
+HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bool opaque, std::shared_ptr<QkOpaqueState> opaqueState)
 {
     InvalidateBindings();
     ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty);
-    target = rtv; width = w; height = h; targetOpaque = opaque;
+    targetOpaqueState=opaqueState; target = rtv; width = w; height = h; targetOpaque = opaque;
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     return DeviceStatus();
 }
@@ -764,7 +776,14 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
     if(m_states[D3DRS_SCISSORTESTENABLE]) IntersectRect(&clip,&clip,&m_scissor);
     RECT bounds={0,0,static_cast<LONG>(width),static_cast<LONG>(height)};
     if(!IntersectRect(&clip,&clip,&bounds)) return S_OK;
-    if(!count && EqualRect(&clip,&bounds)) { context->ClearRenderTargetView(target.Get(), rgba); return DeviceStatus(); }
+    if(!count && EqualRect(&clip,&bounds)) {
+        if(FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+        if(targetOpaque && QkLayerNativeCopyEnabled()) rgba[3]=1;
+        context->ClearRenderTargetView(target.Get(), rgba);
+        HRESULT hr=DeviceStatus();
+        if(targetOpaqueState) targetOpaqueState->alphaKnownOpaque=SUCCEEDED(hr) && rgba[3]==1;
+        return hr;
+    }
     D3DRECT all={clip.left,clip.top,clip.right,clip.bottom};
     if(!count) {rects=&all;count=1;}
     auto savedVS=m_boundVS; auto savedPS=m_boundPS;

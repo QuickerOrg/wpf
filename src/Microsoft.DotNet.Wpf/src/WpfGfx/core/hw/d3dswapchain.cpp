@@ -456,6 +456,10 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
         if(m_rgBackBuffers[0]->Desc().Format==D3DFMT_X8R8G8B8) {
             const float opaqueBlack[4]={0,0,0,1};
             m_facadeState->context->ClearRenderTargetView(m_rgBackBuffers[0]->m_facadeRTV.Get(),opaqueBlack);
+            HRESULT status=m_facadeState->DeviceStatus();
+            auto state=m_rgBackBuffers[0]->GetD3DSurfaceNoAddRef()->opaqueState;
+            if(state) state->alphaKnownOpaque=SUCCEEDED(status);
+            if(FAILED(status)) return status;
         }
         QkFacadeCount(QkFacadeCounter::SwapChainReuse);
         return S_OK;

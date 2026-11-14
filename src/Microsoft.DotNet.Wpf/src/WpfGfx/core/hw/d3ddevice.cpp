@@ -1765,6 +1765,7 @@ CD3DDeviceLevel1::MarkUnusable(
 #if QUICKER_WPF_D3D11_FACADE
     QkFacadeSharedGuard guard;
     m_hrDisplayInvalid = WGXERR_DISPLAYSTATEINVALID;
+    if(m_facade) m_facade->MarkUnusable();
     // 与原实现相同：跨线程只标记，资源清理延迟到设备入口保护内，且仅通知一次。
     if (!m_fDeviceLostProcessed && IsProtected(fMayBeMultithreadedCall)) {
         m_fDeviceLostProcessed = true;
@@ -2345,13 +2346,13 @@ CD3DDeviceLevel1::CreateTexture(
     __in_ecount(1) const D3DSURFACE_DESC *pSurfDesc,
     UINT uLevels,
     __deref_out_ecount(1) QkTextureHandle ** const ppD3DTexture,
-    __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle
+    __deref_opt_inout_ecount(1) HANDLE * const pSharedHandle QK_PURPOSE_PARAMETER
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
     if(pSharedHandle) return QkFacadeUnimpl("CreateTexture.shared");
     if(m_fDeviceLostProcessed) return WGXERR_DISPLAYSTATEINVALID;
-    return m_facade->CreateTexture(pSurfDesc,uLevels,ppD3DTexture);
+    return m_facade->CreateTexture(pSurfDesc,uLevels,ppD3DTexture,purpose);
 #else
 
     AssertDeviceEntry(*this);
@@ -2887,7 +2888,7 @@ CD3DDeviceLevel1::SetRenderTargetForEffectPipeline(
 #if QUICKER_WPF_D3D11_FACADE
     auto surface=pD3DSurface->ID3DSurface();
     if(!surface || !surface->rtv) return E_INVALIDARG;
-    HRESULT hr=m_facade->BindTarget(surface->rtv.Get(),surface->desc.Width,surface->desc.Height,surface->desc.Format==D3DFMT_X8R8G8B8);
+    HRESULT hr=m_facade->BindTarget(surface->rtv.Get(),surface->desc.Width,surface->desc.Height,surface->desc.Format==D3DFMT_X8R8G8B8,surface->opaqueState);
     if(FAILED(hr)) return hr;
     m_desc=pD3DSurface->Desc(); m_pCurrentRenderTargetNoRef=pD3DSurface;
     SetClipSet(false);
@@ -2989,7 +2990,7 @@ CD3DDeviceLevel1::SetRenderTarget(
 #if QUICKER_WPF_D3D11_FACADE
     if(pD3DSurface->m_facadeGeneration!=m_facade->generation) return WGXERR_DISPLAYSTATEINVALID;
     m_desc=pD3DSurface->Desc(); m_pCurrentRenderTargetNoRef=pD3DSurface;
-    HRESULT hr=m_facade->BindTarget(pD3DSurface->m_facadeRTV.Get(),m_desc.Width,m_desc.Height,m_desc.Format==D3DFMT_X8R8G8B8); if(FAILED(hr)) return hr;
+    HRESULT hr=m_facade->BindTarget(pD3DSurface->m_facadeRTV.Get(),m_desc.Width,m_desc.Height,m_desc.Format==D3DFMT_X8R8G8B8,pD3DSurface->GetD3DSurfaceNoAddRef()->opaqueState); if(FAILED(hr)) return hr;
     SetClipSet(false); MilPointAndSizeL vp={0,0,static_cast<INT>(m_desc.Width),static_cast<INT>(m_desc.Height)};
     ScissorRectChanged(&vp); hr=SetViewport(&vp); if(FAILED(hr)) return hr;
     return SetSurfaceToClippingMatrix(&vp);
@@ -3120,7 +3121,7 @@ CD3DDeviceLevel1::ReleaseUseOfRenderTarget(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    if(pD3DSurface==m_pCurrentRenderTargetNoRef) { m_pCurrentRenderTargetNoRef=nullptr; m_facade->target.Reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr); }
+    if(pD3DSurface==m_pCurrentRenderTargetNoRef) { m_pCurrentRenderTargetNoRef=nullptr; m_facade->target.Reset(); m_facade->targetOpaqueState.reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr); }
     return;
 #else
 
@@ -3147,7 +3148,7 @@ CD3DDeviceLevel1::ReleaseUseOfRenderTarget(
         }
 
 #if QUICKER_WPF_D3D11_FACADE
-        m_facade->target.Reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr);
+        m_facade->target.Reset(); m_facade->targetOpaqueState.reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr);
 #else
         IGNORE_HR(m_pD3DDevice->SetRenderTarget(0, m_pD3DDummyBackBuffer));
 #endif
@@ -3291,11 +3292,11 @@ CD3DDeviceLevel1::ColorFill(
 {
 #if QUICKER_WPF_D3D11_FACADE
     if(!pSurface || !pSurface->rtv) return E_INVALIDARG;
-    auto target=m_facade->target; bool opaque=m_facade->targetOpaque; UINT w=m_facade->width,h=m_facade->height;
-    HRESULT hr=m_facade->BindTarget(pSurface->rtv.Get(),pSurface->desc.Width,pSurface->desc.Height,pSurface->desc.Format==D3DFMT_X8R8G8B8);
+    auto target=m_facade->target; auto opaqueState=m_facade->targetOpaqueState; bool opaque=m_facade->targetOpaque; UINT w=m_facade->width,h=m_facade->height;
+    HRESULT hr=m_facade->BindTarget(pSurface->rtv.Get(),pSurface->desc.Width,pSurface->desc.Height,pSurface->desc.Format==D3DFMT_X8R8G8B8,pSurface->opaqueState);
     D3DRECT rect; if(pRect) rect={pRect->left,pRect->top,pRect->right,pRect->bottom};
     if(SUCCEEDED(hr)) hr=m_facade->Clear(D3DCLEAR_TARGET,color,pRect?1:0,pRect?&rect:nullptr);
-    m_facade->BindTarget(target.Get(),w,h,opaque); return hr;
+    m_facade->BindTarget(target.Get(),w,h,opaque,opaqueState); return hr;
 #else
 
     {
@@ -3806,7 +3807,7 @@ CD3DDeviceLevel1::HandlePresentFailure(
         m_pCurrentRenderTargetNoRef = NULL;
 
 #if QUICKER_WPF_D3D11_FACADE
-        m_facade->target.Reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr);
+        m_facade->target.Reset(); m_facade->targetOpaqueState.reset(); m_facade->context->OMSetRenderTargets(0,nullptr,nullptr);
 #else
         IGNORE_HR(m_pD3DDevice->SetRenderTarget(0, m_pD3DDummyBackBuffer));
 #endif

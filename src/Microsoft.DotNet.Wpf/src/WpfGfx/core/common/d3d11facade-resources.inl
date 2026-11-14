@@ -16,18 +16,21 @@ static UINT QkPixelSize(D3DFORMAT format)
     return format==D3DFMT_A8 ? 1 : D3DFormatSize(format);
 }
 
-HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTextureHandle **out)
+HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTextureHandle **out,QkTexturePurpose purpose)
 {
     QK_INTERFACE_SCOPE(TextureWrapper);
     *out=nullptr;
     if(!desc || !desc->Width || !desc->Height || desc->MultiSampleType!=D3DMULTISAMPLE_NONE) return E_INVALIDARG;
-    DXGI_FORMAT format=QkFormat(desc->Format);
+    if(!QkLayerNativeCopyEnabled()) purpose=QkTexturePurpose::Ordinary;
+    const bool background=purpose==QkTexturePurpose::LayerBackground;
+    if(background && (desc->Format!=D3DFMT_X8R8G8B8 || levels!=1 || desc->Pool!=D3DPOOL_DEFAULT || desc->Usage!=D3DUSAGE_RENDERTARGET)) return E_INVALIDARG;
+    DXGI_FORMAT format=background?DXGI_FORMAT_B8G8R8A8_UNORM:QkFormat(desc->Format);
     if(format==DXGI_FORMAT_UNKNOWN) return QkFacadeUnimpl("Texture.format");
     if(!levels) { levels=1; for(UINT n=max(desc->Width,desc->Height);n>1;n>>=1) ++levels; }
     if(levels>15) return E_INVALIDARG;
     ComPtr<QkTextureHandle> t; t.Attach(new QkTextureHandle);
     if(!t) return E_OUTOFMEMORY;
-    t->context=context; t->generation=generation;
+    t->context=context; t->generation=generation; t->purpose=purpose;
     D3D11_TEXTURE2D_DESC td={}; td.Width=desc->Width; td.Height=desc->Height;
     td.MipLevels=levels; td.ArraySize=1; td.Format=format; td.SampleDesc.Count=1;
     const bool pooled=levels==1 && desc->Pool==D3DPOOL_DEFAULT && desc->Usage==D3DUSAGE_RENDERTARGET;
@@ -37,10 +40,11 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         if(FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
         if(!m_transientPool) m_transientPool=std::make_shared<QkTransientPool>();
         lease=std::make_shared<QkTransientLease>(); lease->pool=m_transientPool;
-        poolHit=m_transientPool->Take(*desc,lease->bundle);
+        poolHit=m_transientPool->Take(*desc,format,purpose,lease->bundle);
         if(poolHit) { t->texture=lease->bundle.texture; t->srv=lease->bundle.srv; }
         t->transientLease=lease;
     }
+    if(background) t->opaqueState=poolHit?lease->bundle.opaqueState:std::make_shared<QkOpaqueState>();
     // 系统内存资源保存锁定镜像；可采样资源只分配一次 DEFAULT，脏区 UpdateSubresource。
     if(desc->Pool!=D3DPOOL_SYSTEMMEM && !poolHit) {
         td.Usage=D3D11_USAGE_DEFAULT; td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
@@ -57,7 +61,7 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         if(!v) return E_OUTOFMEMORY;
         v->texture=t->texture; v->context=context; v->generation=generation; v->mip=n;
         v->desc=*desc; v->desc.Width=max(1U,desc->Width>>n); v->desc.Height=max(1U,desc->Height>>n);
-        v->transientLease=lease;
+        v->transientLease=lease; v->opaqueState=t->opaqueState; v->purpose=purpose;
         if(poolHit) { v->srv=lease->bundle.srv; v->rtv=lease->bundle.rtv; }
         // 单 mip 的全纹理 SRV 与 mip SRV 等价；无需再建一个同描述视图。
         if(levels==1) v->srv=t->srv;
@@ -75,11 +79,55 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         t->levels.push_back(v.Detach());
     }
     if(lease && !poolHit) {
+        lease->bundle.physicalFormat=format; lease->bundle.purpose=purpose; lease->bundle.opaqueState=t->opaqueState;
         lease->bundle.desc=*desc; lease->bundle.texture=t->texture; lease->bundle.srv=t->srv; lease->bundle.rtv=t->levels[0]->rtv;
         lease->bundle.bytes=static_cast<ULONGLONG>(desc->Width)*desc->Height*QkPixelSize(desc->Format);
     }
     QkFacadeTrace((desc->Usage&D3DUSAGE_RENDERTARGET)?"QK-FACADE create offscreen RT texture\n":"QK-FACADE create upload/sample texture\n");
     *out=t.Detach(); return S_OK;
+}
+
+// 捕获边界调用一次，绝不放进逐边条的 Copy。
+HRESULT QkD3D11State::PrepareLayerBackground(QkTextureHandle *texture)
+{
+    if(!texture) return E_INVALIDARG;
+    if(texture->purpose!=QkTexturePurpose::LayerBackground) return S_OK;
+    if(texture->generation!=generation || FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+    if(texture->levels.size()!=1 || !texture->opaqueState || !texture->transientLease || !texture->transientLease->pool->valid) return E_UNEXPECTED;
+    auto surface=texture->levels[0];
+    D3D11_TEXTURE2D_DESC actual={}; texture->texture->GetDesc(&actual);
+    if(actual.Format!=DXGI_FORMAT_B8G8R8A8_UNORM || actual.MipLevels!=1 || actual.ArraySize!=1 || !surface->rtv) return E_UNEXPECTED;
+    if(texture->opaqueState->alphaKnownOpaque) return S_OK;
+    QkFacadeBindingReset bindingReset(*this);
+    ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty); context->OMSetRenderTargets(0,nullptr,nullptr);
+    const float opaqueBlack[4]={0,0,0,1};
+    context->ClearRenderTargetView(surface->rtv.Get(),opaqueBlack);
+    QkFacadeCount(QkFacadeCounter::LayerInitialize);
+    HRESULT hr=DeviceStatus(); texture->opaqueState->alphaKnownOpaque=SUCCEEDED(hr);
+    return hr;
+}
+HRESULT QkD3D11State::ValidateLayerBackground(QkTextureHandle *texture)
+{
+    static const bool enabled=QkLayerDiagnosticFlag(L"QUICKER_FACADE_VALIDATE_OPAQUE_ALPHA");
+    if(!enabled || !texture || texture->purpose!=QkTexturePurpose::LayerBackground) return S_OK;
+    if(texture->generation!=generation || FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+    if(texture->levels.size()!=1 || !texture->transientLease || !texture->transientLease->pool->valid) return E_UNEXPECTED;
+    // 检查整张分配，包含边条之外的保守超集；只读源，不软件补 Alpha。
+    QkFacadeBindingReset bindingReset(*this);
+    ID3D11ShaderResourceView *empty[8]={}; context->PSSetShaderResources(0,8,empty); context->OMSetRenderTargets(0,nullptr,nullptr);
+    auto surface=texture->levels[0]; D3DLOCKED_RECT mapped={};
+    surface->staging=texture->opaqueState->validationStaging;
+    HRESULT hr=surface->LockRect(&mapped,nullptr,D3DLOCK_READONLY);
+    texture->opaqueState->validationStaging=surface->staging;
+    if(FAILED(hr)) return hr;
+    ULONGLONG violations=0;
+    for(UINT y=0;y<surface->desc.Height;++y) {
+        const BYTE *row=static_cast<const BYTE*>(mapped.pBits)+static_cast<size_t>(y)*mapped.Pitch;
+        for(UINT x=0;x<surface->desc.Width;++x) if(row[x*4+3]!=255) ++violations;
+    }
+    surface->UnlockRect();
+    if(violations) { QkFacadeCount(QkFacadeCounter::LayerAlphaViolation,violations); texture->opaqueState->alphaKnownOpaque=false; return E_FAIL; }
+    return DeviceStatus();
 }
 
 HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD flags)
@@ -121,6 +169,7 @@ HRESULT QkSurfaceHandle::UnlockRect()
     QkFacadeSharedGuard sharedGuard;
     if(!locked) return E_INVALIDARG;
     locked=false;
+    if(purpose==QkTexturePurpose::LayerBackground && !(lockFlags&D3DLOCK_READONLY)) { QkFacadeCount(QkFacadeCounter::LayerUploadRejected); return E_ACCESSDENIED; }
     if(texture && !(lockFlags&D3DLOCK_READONLY)) {
         UINT pitch=desc.Width*QkPixelSize(desc.Format);
         BYTE *data=reference?reference:pixels.data();
@@ -131,7 +180,9 @@ HRESULT QkSurfaceHandle::UnlockRect()
 HRESULT QkSurfaceHandle::UploadRect(const RECT &rect,const BYTE *data,UINT pitch)
 {
     QkFacadeSharedGuard sharedGuard;
+    if(purpose==QkTexturePurpose::LayerBackground) { QkFacadeCount(QkFacadeCounter::LayerUploadRejected); return E_ACCESSDENIED; }
     if(!texture || !data) return E_INVALIDARG;
+    if(opaqueState) opaqueState->alphaKnownOpaque=false;
     D3D11_BOX box={static_cast<UINT>(rect.left),static_cast<UINT>(rect.top),0,
         static_cast<UINT>(rect.right),static_cast<UINT>(rect.bottom),1};
     // A8/R8 保留单字节 atlas；文字 shader 在采样边界恢复 D3D9 通道语义。
@@ -142,6 +193,7 @@ HRESULT QkSurfaceHandle::UploadRect(const RECT &rect,const BYTE *data,UINT pitch
 HRESULT QkTextureHandle::AddDirtyRect(const RECT *rect)
 {
     QkFacadeSharedGuard sharedGuard;
+    if(purpose==QkTexturePurpose::LayerBackground) { QkFacadeCount(QkFacadeCounter::LayerUploadRejected); return E_ACCESSDENIED; }
     if(!texture) return S_OK; // SYSTEMMEM 脏区在 UpdateTexture 时传输。
     auto s=levels[0];
     if(s->pixels.empty() && !s->reference) return E_UNEXPECTED;
@@ -512,6 +564,9 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     QK_INTERFACE_SCOPE(CopyTotal);
     QkFacadeBindingReset bindingReset(*this);
     if(!src || !dst || src->generation!=generation || dst->generation!=generation) return E_INVALIDARG;
+    if(FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+    const bool background=dst->purpose==QkTexturePurpose::LayerBackground;
+    if(background && (!dst->opaqueState || !dst->opaqueState->alphaKnownOpaque || !dst->transientLease || !dst->transientLease->pool->valid)) return E_UNEXPECTED;
     RECT a=srcRect?*srcRect:RECT{0,0,static_cast<LONG>(src->desc.Width),static_cast<LONG>(src->desc.Height)};
     RECT b=dstRect?*dstRect:RECT{0,0,static_cast<LONG>(dst->desc.Width),static_cast<LONG>(dst->desc.Height)};
     if(!presentClipping && (a.left<0 || a.top<0 || a.right<=a.left || a.bottom<=a.top || static_cast<UINT>(a.right)>src->desc.Width || static_cast<UINT>(a.bottom)>src->desc.Height ||
@@ -519,6 +574,7 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     if(IsRectEmpty(&a) || IsRectEmpty(&b)) return S_OK;
     bool sameSize=a.right-a.left==b.right-b.left && a.bottom-a.top==b.bottom-b.top;
     if(!src->texture) {
+        if(background) { QkFacadeCount(QkFacadeCounter::LayerUploadRejected); return E_ACCESSDENIED; }
         if(!sameSize || !dst->texture || src->desc.Format!=dst->desc.Format) return E_INVALIDARG;
         BYTE *data=src->reference?src->reference:src->pixels.data(); if(!data) return E_UNEXPECTED;
         UINT bpp=QkPixelSize(src->desc.Format),pitch=src->desc.Width*bpp;
@@ -528,7 +584,20 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     if(!dst->texture) return E_INVALIDARG;
     D3D11_TEXTURE2D_DESC srcNative={},dstNative={};
     src->texture->GetDesc(&srcNative); dst->texture->GetDesc(&dstNative);
-    const bool nativeCopy=!presentClipping && sameSize && src->desc.Format==dst->desc.Format && srcNative.Format==dstNative.Format && src->texture.Get()!=dst->texture.Get();
+    const bool oldNativeCopy=!presentClipping && sameSize && src->desc.Format==dst->desc.Format && srcNative.Format==dstNative.Format && src->texture.Get()!=dst->texture.Get();
+    bool sourceOpaque=src->opaqueState && src->opaqueState->alphaKnownOpaque && (!src->transientLease || src->transientLease->pool->valid);
+    // 测试钩子只有验证开关同时打开才生效，不改变生产来源证明。
+    static const bool forceUnknown=QkLayerDiagnosticFlag(L"QUICKER_FACADE_VALIDATE_OPAQUE_ALPHA") && QkLayerDiagnosticFlag(L"QUICKER_FACADE_FORCE_LAYER_SOURCE_UNKNOWN");
+    if(background && forceUnknown) sourceOpaque=false;
+    const bool nativeCopy=background?(oldNativeCopy && sourceOpaque):oldNativeCopy;
+    if(background && !nativeCopy && (!dst->rtv || (src->texture.Get()==dst->texture.Get() && src->mip==dst->mip))) return E_INVALIDARG;
+    if(background && !nativeCopy) {
+        QkFacadeCount(presentClipping?QkFacadeCounter::LayerFallbackPresent:
+            !sameSize?QkFacadeCounter::LayerFallbackSize:
+            src->texture.Get()==dst->texture.Get()?QkFacadeCounter::LayerFallbackSameResource:
+            srcNative.Format!=dstNative.Format?QkFacadeCounter::LayerFallbackFormat:
+            !sourceOpaque?QkFacadeCounter::LayerFallbackSourceUnknown:QkFacadeCounter::LayerFallbackOther);
+    }
     if(!nativeCopy) {
         const UINT details[]={src->desc.Format,dst->desc.Format,srcNative.Format,dstNative.Format,src->desc.Width,src->desc.Height,dst->desc.Width,dst->desc.Height,
             static_cast<UINT>(a.left),static_cast<UINT>(a.top),static_cast<UINT>(a.right-a.left),static_cast<UINT>(a.bottom-a.top),
@@ -542,7 +611,9 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     if(nativeCopy) {
         D3D11_BOX box={static_cast<UINT>(a.left),static_cast<UINT>(a.top),0,static_cast<UINT>(a.right),static_cast<UINT>(a.bottom),1};
         QK_INTERFACE_SCOPE(CopyNative);
+        if(dst->opaqueState && !sourceOpaque) dst->opaqueState->alphaKnownOpaque=false;
         context->CopySubresourceRegion(dst->texture.Get(),dst->mip,b.left,b.top,0,src->texture.Get(),src->mip,&box);
+        if(background) QkFacadeCount(QkFacadeCounter::LayerNativeCopy);
         QkFacadeTrace("QK-FACADE CopySubresourceRegion\n");
         return DeviceStatus();
     }
@@ -553,12 +624,12 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
         (dst->desc.Format==D3DFMT_X8R8G8B8 || dst->desc.Format==D3DFMT_A8R8G8B8)) {
         return CopyColorFast(src,dst,a,b);
     }
-    auto oldTarget=target; bool oldOpaque=targetOpaque; UINT oldW=width,oldH=height; auto oldVP=m_viewport; DWORD oldFVF=m_fvf;
+    auto oldTarget=target; auto oldOpaqueState=targetOpaqueState; bool oldOpaque=targetOpaque; UINT oldW=width,oldH=height; auto oldVP=m_viewport; DWORD oldFVF=m_fvf;
     DWORD states[210],stages[8][33],samplers[16][14]; memcpy(states,m_states,sizeof(states)); memcpy(stages,m_stages,sizeof(stages)); memcpy(samplers,m_samplers,sizeof(samplers));
     auto oldVS=m_boundVS,oldPS=m_boundPS; auto oldTex=m_textures[0];
     ComPtr<QkTextureHandle> t; t.Attach(new QkTextureHandle); t->texture=src->texture; t->srv=src->srv; t->generation=generation;
     m_textures[0]=t; m_boundVS.Reset(); m_boundPS.Reset();
-    target=dst->rtv; targetOpaque=dst->desc.Format==D3DFMT_X8R8G8B8; width=dst->desc.Width; height=dst->desc.Height; m_viewport={0,0,width,height,0,1};
+    targetOpaqueState=dst->opaqueState; target=dst->rtv; targetOpaque=dst->desc.Format==D3DFMT_X8R8G8B8; width=dst->desc.Width; height=dst->desc.Height; m_viewport={0,0,width,height,0,1};
     m_fvf=D3DFVF_XYZ|D3DFVF_DIFFUSE|D3DFVF_TEX1;
     m_states[D3DRS_ALPHABLENDENABLE]=FALSE; m_states[D3DRS_SCISSORTESTENABLE]=FALSE; m_states[D3DRS_COLORWRITEENABLE]=15;
     m_stages[0][D3DTSS_COLOROP]=m_stages[0][D3DTSS_ALPHAOP]=D3DTOP_SELECTARG1;
@@ -587,7 +658,7 @@ HRESULT QkD3D11State::Copy(QkSurfaceHandle *src,const RECT *srcRect,QkSurfaceHan
     QkFacadeDrawKind drawKind(m_drawKind,presentClipping?4:!sameSize?3:src->texture.Get()==dst->texture.Get()?5:2);
     HRESULT hr=DrawUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(V));
     if(SUCCEEDED(hr)) QkFacadeTrace("QK-FACADE shader blit\n");
-    target=oldTarget;targetOpaque=oldOpaque;width=oldW;height=oldH;m_viewport=oldVP;m_fvf=oldFVF;m_boundVS=oldVS;m_boundPS=oldPS;m_textures[0]=oldTex;
+    targetOpaqueState=oldOpaqueState;target=oldTarget;targetOpaque=oldOpaque;width=oldW;height=oldH;m_viewport=oldVP;m_fvf=oldFVF;m_boundVS=oldVS;m_boundPS=oldPS;m_textures[0]=oldTex;
     memcpy(m_states,states,sizeof(states));memcpy(m_stages,stages,sizeof(stages));memcpy(m_samplers,samplers,sizeof(samplers));
     return hr;
 }
