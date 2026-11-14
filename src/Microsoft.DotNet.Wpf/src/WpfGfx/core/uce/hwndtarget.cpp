@@ -88,6 +88,10 @@ CSlaveHWndRenderTarget::Render(
     __out_ecount(1) bool *pfNeedsPresent
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkS5mScope s5mScope(20,21,m_hWnd);
+#endif
+
 #if !QUICKER_WPF_D3D11_FACADE
     static const bool measure = []() { WCHAR value[8] = {}; if (GetEnvironmentVariableW(L"QUICKER_GPU_RUN_COUNTERS", value, 8) == 1 && value[0] == L'1') return true; return GetEnvironmentVariableW(L"QUICKER_GPU_ACCOUNTING", value, 8) == 1 && value[0] == L'1'; }();
     if (measure && m_hWnd)
@@ -302,6 +306,10 @@ Cleanup:
 HRESULT
 CSlaveHWndRenderTarget::Present()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkS5mScope s5mScope(22,23,m_hWnd);
+#endif
+
     HRESULT hr = S_OK;
     if (m_fNeedsPresent)
     {
@@ -553,6 +561,10 @@ CSlaveHWndRenderTarget::ProcessUpdateWindowSettings(
     __in_ecount(1) const MILCMD_TARGET_UPDATEWINDOWSETTINGS* pCmd
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkS5mScope s5mScope(24,25,m_hWnd);
+#endif
+
     HRESULT hr = S_OK;
 
     MilWindowLayerType::Enum eWindowLayerType = pCmd->windowLayerType;

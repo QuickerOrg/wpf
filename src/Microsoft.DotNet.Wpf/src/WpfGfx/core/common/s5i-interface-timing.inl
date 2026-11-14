@@ -45,6 +45,15 @@ void QkS5kFlush() {
 }
 
 static volatile LONG64 qkInterfaceMetrics[static_cast<UINT>(QkInterfaceMetric::Count)][3]={};
+#if QUICKER_WPF_D3D11_FACADE
+void QkS5mMetrics(ULONGLONG *cycles, LONGLONG *qpc) {
+    const QkInterfaceMetric metrics[]={QkInterfaceMetric::Draw,QkInterfaceMetric::S5mMap,QkInterfaceMetric::VertexUpload,QkInterfaceMetric::ConstantUpload,QkInterfaceMetric::PresentTotal,QkInterfaceMetric::HideTrim,QkInterfaceMetric::S5mEnum,QkInterfaceMetric::S5mFlush,QkInterfaceMetric::S5mTrim};
+    for(UINT i=0;i<ARRAYSIZE(metrics);++i) {
+        auto &v=qkInterfaceMetrics[static_cast<UINT>(metrics[i])];
+        cycles[i]=InterlockedCompareExchange64(&v[2],0,0);qpc[i]=InterlockedCompareExchange64(&v[1],0,0);
+    }
+}
+#endif
 bool QkInterfaceEnabled() {
     static const bool enabled=[]() { WCHAR value[2]={}; return GetEnvironmentVariableW(L"QUICKER_WPF_INTERFACE_TIMING",value,2)==1 && value[0]==L'1'; }();
     return enabled;

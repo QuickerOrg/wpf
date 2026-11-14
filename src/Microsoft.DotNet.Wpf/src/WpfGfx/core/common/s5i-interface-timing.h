@@ -34,6 +34,7 @@
     X(PresentUlw,"present-ulw") \
     X(TraceDebug,"trace-debug") \
     X(HideTrim,"hide-trim") \
+    X(S5mEnum,"s5m.enum") X(S5mFlush,"s5m.flush") X(S5mTrim,"s5m.trim") X(S5mMap,"s5m.map") \
     X(EntryIndexedUp,"entry.indexed-up") X(EntryIndexed,"entry.indexed") X(EntryList,"entry.list") \
     X(EntryStrip,"entry.strip") X(EntryUp,"entry.up") X(ZeroDraw,"draw.zero") \
     X(BlitXtoA,"blit.x-to-a") X(BlitAtoX,"blit.a-to-x") X(BlitOther,"blit.other") \

@@ -152,7 +152,7 @@ HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD fla
             QkAccount(staging.Get(),"staging",static_cast<ULONGLONG>(td.Width)*td.Height*QkPixelSize(desc.Format));
         }
         context->CopyResource(staging.Get(),texture.Get());
-        D3D11_MAPPED_SUBRESOURCE map; HRESULT hr=context->Map(staging.Get(),mip,D3D11_MAP_READ,0,&map); if(FAILED(hr)) return hr;
+        D3D11_MAPPED_SUBRESOURCE map; HRESULT hr=QK_INTERFACE_CALL(S5mMap,context->Map(staging.Get(),mip,D3D11_MAP_READ,0,&map)); if(FAILED(hr)) return hr;
         for(UINT y=0;y<desc.Height;++y) {
             auto row=static_cast<BYTE*>(map.pData)+y*map.RowPitch;
             if(desc.Format==D3DFMT_A8 || desc.Format==D3DFMT_L8) {
@@ -443,7 +443,7 @@ HRESULT QkD3D11State::ApplyShaders()
         bool &dirty=n?m_psDirty:m_vsDirty; if(!dirty) continue;
         QK_INTERFACE_SCOPE(ConstantUpload);
         auto buffer=n?m_psConstants:m_vsConstants;
-        D3D11_MAPPED_SUBRESOURCE map; hr=context->Map(buffer.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map); if(FAILED(hr)) return hr;
+        D3D11_MAPPED_SUBRESOURCE map; hr=QK_INTERFACE_CALL(S5mMap,context->Map(buffer.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map)); if(FAILED(hr)) return hr;
         memcpy(map.pData,n?m_psData:m_vsData,n?sizeof(m_psData):sizeof(m_vsData)); context->Unmap(buffer.Get(),0); dirty=false;
     }
     if(!validBindings) { QK_INTERFACE_SCOPE(ConstantBindings);
@@ -537,7 +537,7 @@ HRESULT QkD3D11State::CopyColorFast(QkSurfaceHandle *src,QkSurfaceHandle *dst,co
     const INT offset[]={a.left-b.left,a.top-b.top,0,0};
     if(!m_copyOffsetValid || memcmp(m_copyOffset,offset,sizeof(offset))) {
         QK_INTERFACE_SCOPE(ConstantUpload);
-        D3D11_MAPPED_SUBRESOURCE mapped={};hr=context->Map(m_copyConstants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped);if(FAILED(hr))return hr;
+        D3D11_MAPPED_SUBRESOURCE mapped={};hr=QK_INTERFACE_CALL(S5mMap,context->Map(m_copyConstants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped));if(FAILED(hr))return hr;
         memcpy(mapped.pData,offset,sizeof(offset));context->Unmap(m_copyConstants.Get(),0);
         memcpy(m_copyOffset,offset,sizeof(offset));m_copyOffsetValid=true;
     }
@@ -675,7 +675,7 @@ HRESULT QkD3D11State::PresentBlit(ID3D11Texture2D *source, ID3D11Texture2D *dest
         QkFacadeCount(QkFacadeCounter::ReadbackBytes,static_cast<ULONGLONG>(desc.Width)*desc.Height*4);
         context->OMSetRenderTargets(0,nullptr,nullptr);
         context->CopyResource(staging.Get(),texture);
-        D3D11_MAPPED_SUBRESOURCE map;hr=context->Map(staging.Get(),0,D3D11_MAP_READ,0,&map);if(FAILED(hr)) return hr;
+        D3D11_MAPPED_SUBRESOURCE map;hr=QK_INTERFACE_CALL(S5mMap,context->Map(staging.Get(),0,D3D11_MAP_READ,0,&map));if(FAILED(hr)) return hr;
         pixels.resize(static_cast<size_t>(desc.Width)*desc.Height*4);
         for(UINT y=0;y<desc.Height;++y) memcpy(pixels.data()+static_cast<size_t>(y)*desc.Width*4,static_cast<BYTE*>(map.pData)+y*map.RowPitch,desc.Width*4);
         context->Unmap(staging.Get(),0);return S_OK;

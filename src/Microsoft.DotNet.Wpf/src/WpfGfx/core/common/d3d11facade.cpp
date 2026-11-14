@@ -143,6 +143,7 @@ static std::vector<QkD3D11State*> qkSharedStates;
 static std::map<ID3D11DeviceContext*,QkD3D11State*> qkActiveStates;
 static std::vector<QkD3D11State*> qkEntryStack;
 static ULONGLONG qkPresentSerial=0, qkTrimmedSerial=0;
+#include "s5m-segments.inl"
 void QkD3D11State::EnterShared() {
     InitOnceExecuteOnce(&qkSharedOnce,[](PINIT_ONCE,PVOID,PVOID*)->BOOL { InitializeCriticalSection(&qkSharedLock); return TRUE; },nullptr,nullptr);
     EnterCriticalSection(&qkSharedLock);
@@ -248,11 +249,12 @@ void QkD3D11State::TrimIfIdle()
     if(qkPresentSerial==qkTrimmedSerial) return;
     QK_INTERFACE_SCOPE(HideTrim);
     bool visible=false;
+    { QK_INTERFACE_SCOPE(S5mEnum);
     EnumWindows([](HWND hwnd,LPARAM arg)->BOOL {
         DWORD pid=0; GetWindowThreadProcessId(hwnd,&pid);
         if(pid==GetCurrentProcessId() && IsWindowVisible(hwnd)) { *reinterpret_cast<bool*>(arg)=true; return FALSE; }
         return TRUE;
-    },reinterpret_cast<LPARAM>(&visible));
+    },reinterpret_cast<LPARAM>(&visible)); }
     if(visible) return;
     // 仅进程全部顶层窗口隐藏后的空闲边界回收驱动内部重命名/暂存存储。
     // Trim 保留应用持有的资源内容；不清空 WPF 缓存，不触发 GC，不等待或跳过动画帧。
@@ -262,7 +264,8 @@ void QkD3D11State::TrimIfIdle()
         if(SUCCEEDED(state->device.As(&dxgi))) {
             PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
             if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
-            QK_INTERFACE_CALL(DriverFlush,state->context->Flush()); dxgi->Trim();
+            { QK_INTERFACE_SCOPE(S5mFlush); QK_INTERFACE_CALL(DriverFlush,state->context->Flush()); }
+            { QK_INTERFACE_SCOPE(S5mTrim); dxgi->Trim(); }
             if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
             char line[320]; StringCchPrintfA(line,320,"{\"event\":\"idle-trim\",\"device\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu}\n",state->device.Get(),static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage)); QkAccountEvent(line); QkAccountBudget(state->device.Get());
         }
@@ -446,7 +449,7 @@ HRESULT QkFacadeBuffer::Lock(UINT offset, UINT count, void **data, DWORD flags)
     *data = nullptr;
     if (m_mapped || offset > size || count > size-offset) return E_INVALIDARG;
     D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = context->Map(buffer.Get(), 0, (flags & D3DLOCK_DISCARD) ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped);
+    HRESULT hr = QK_INTERFACE_CALL(S5mMap,context->Map(buffer.Get(), 0, (flags & D3DLOCK_DISCARD) ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mapped));
     if (SUCCEEDED(hr)) { m_mapped = true; *data = static_cast<BYTE *>(mapped.pData) + offset; }
     return hr;
 }
@@ -656,7 +659,7 @@ HRESULT QkD3D11State::Apply()
     float size[4] = {static_cast<float>(m_viewport.Width), static_cast<float>(m_viewport.Height), static_cast<float>(m_viewport.X), static_cast<float>(m_viewport.Y)};
     if(!m_sizeValid || memcmp(size,m_sizeData,sizeof(size))) {
         QK_INTERFACE_SCOPE(SizeUpload);
-        hr=context->Map(m_constants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map); if(FAILED(hr)) return hr;
+        hr=QK_INTERFACE_CALL(S5mMap,context->Map(m_constants.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&map)); if(FAILED(hr)) return hr;
         memcpy(map.pData,size,sizeof(size)); context->Unmap(m_constants.Get(),0);
         memcpy(m_sizeData,size,sizeof(size)); m_sizeValid=true;
     }
@@ -718,7 +721,7 @@ HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT 
         if(bytes>capacity-position) position=0;
     }
     D3D11_MAP mode=position?D3D11_MAP_WRITE_NO_OVERWRITE:D3D11_MAP_WRITE_DISCARD;
-    D3D11_MAPPED_SUBRESOURCE map; HRESULT hr=context->Map(buffer.Get(),0,mode,0,&map);
+    D3D11_MAPPED_SUBRESOURCE map; HRESULT hr=QK_INTERFACE_CALL(S5mMap,context->Map(buffer.Get(),0,mode,0,&map));
     if(FAILED(hr)) return hr;
     memcpy(static_cast<BYTE*>(map.pData)+position,data,bytes);context->Unmap(buffer.Get(),0);
     if(offset) *offset=position;

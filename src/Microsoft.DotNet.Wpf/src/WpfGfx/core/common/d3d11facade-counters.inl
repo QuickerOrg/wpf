@@ -35,6 +35,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI QuickerFacadeReadCounters(char *
         QK_FACADE_COUNTER_LIST(QK_COUNTER_LABEL)
 #undef QK_COUNTER_LABEL
     };
+    if(QkInterfaceEnabled()) QkS5mFlush();
     char *cursor=buffer; size_t remaining=capacity;
     HRESULT hr=StringCchPrintfExA(cursor,remaining,&cursor,&remaining,0,
         "{\"schema\":1,\"enabled\":%s,\"qpc\":%lld,\"counters\":{",QkFacadeCountersEnabled()?"true":"false",QkFacadeClock());
