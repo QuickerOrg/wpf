@@ -28,6 +28,8 @@ struct QkS5mScope {
 void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail = 0);
 // S5h 聚合计数默认关闭；启用时只做原子累加，由实验夹具在计时边界外读取，不逐帧写文件。
 #define QK_FACADE_COUNTER_LIST(X) \
+    X(TrimArmed,"trim.armed") X(TrimFired,"trim.fired") X(TrimCancelledPresent,"trim.cancelled-present") \
+    X(TrimCancelledVisible,"trim.cancelled-visible") X(TrimExecuted,"trim.executed") \
     X(PresentAttempt,"present.attempt") X(PresentFlip,"present.flip") X(PresentUlw,"present.ulw") X(PresentGpuGdi,"present.gpu-gdi") \
     X(GetDC,"get-dc") X(Readback,"readback") X(ReadbackBytes,"readback.bytes") \
     X(SwapChainCreate,"swapchain.create") X(SwapChainRelease,"swapchain.release") X(SwapChainResizeRequest,"swapchain.resize-request") X(SwapChainResize,"swapchain.resize") X(SwapChainReuse,"swapchain.same-size-reuse") \

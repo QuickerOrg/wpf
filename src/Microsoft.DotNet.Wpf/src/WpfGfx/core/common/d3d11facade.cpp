@@ -241,12 +241,32 @@ bool QkLayerNativeCopyEnabled()
     static const bool enabled=QkLayerDiagnosticFlag(L"QUICKER_FACADE_ENABLE_LAYER_NATIVE_COPY") &&
         !QkLayerDiagnosticFlag(L"QUICKER_FACADE_DISABLE_LAYER_NATIVE_COPY"); return enabled;
 }
-void QkD3D11State::TrimIfIdle()
+// 只有登记与回调访问这些值，且始终持有 qkSharedLock；不持有设备或 UI 对象。
+static PTP_TIMER qkHideTrimTimer=nullptr;
+static ULONGLONG qkHideTrimArmedSerial=0, qkHideTrimDue=0;
+static DWORD QkHideTrimDelay()
 {
-    static const bool disabled=QkLayerDiagnosticFlag(L"QUICKER_FACADE_DISABLE_HIDE_TRIM");
-    if(disabled) return;
-    struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
-    if(qkPresentSerial==qkTrimmedSerial) return;
+    static const DWORD delay=[]()->DWORD {
+        WCHAR value[16]={}; DWORD n=GetEnvironmentVariableW(L"QUICKER_FACADE_HIDE_TRIM_DELAY_MS",value,ARRAYSIZE(value));
+        if(!n || n>=ARRAYSIZE(value)) return 60000;
+        ULONGLONG result=0;
+        for(DWORD i=0;i<n;++i) {
+            if(value[i]<L'0' || value[i]>L'9') return 60000;
+            result=result*10+value[i]-L'0'; if(result>MAXDWORD) return 60000;
+        }
+        return static_cast<DWORD>(result);
+    }();
+    return delay;
+}
+static void QkSetHideTrimTimer(DWORD delay)
+{
+    LARGE_INTEGER due; due.QuadPart=-static_cast<LONGLONG>(delay)*10000;
+    FILETIME time={due.LowPart,static_cast<DWORD>(due.HighPart)};
+    SetThreadpoolTimer(qkHideTrimTimer,&time,0,0);
+}
+// 调用方已持共享锁；0 延迟与旧路径使用完全相同的枚举和回收动作。
+static void QkTrimSharedDevicesIfIdle(bool delayed)
+{
     QK_INTERFACE_SCOPE(HideTrim);
     bool visible=false;
     { QK_INTERFACE_SCOPE(S5mEnum);
@@ -255,7 +275,7 @@ void QkD3D11State::TrimIfIdle()
         if(pid==GetCurrentProcessId() && IsWindowVisible(hwnd)) { *reinterpret_cast<bool*>(arg)=true; return FALSE; }
         return TRUE;
     },reinterpret_cast<LPARAM>(&visible)); }
-    if(visible) return;
+    if(visible) { if(delayed) QkFacadeCount(QkFacadeCounter::TrimCancelledVisible); return; }
     // 仅进程全部顶层窗口隐藏后的空闲边界回收驱动内部重命名/暂存存储。
     // Trim 保留应用持有的资源内容；不清空 WPF 缓存，不触发 GC，不等待或跳过动画帧。
     std::set<ID3D11Device*> trimmed;
@@ -266,11 +286,52 @@ void QkD3D11State::TrimIfIdle()
             if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
             { QK_INTERFACE_SCOPE(S5mFlush); QK_INTERFACE_CALL(DriverFlush,state->context->Flush()); }
             { QK_INTERFACE_SCOPE(S5mTrim); dxgi->Trim(); }
+            QkFacadeCount(QkFacadeCounter::TrimExecuted);
+            QkS5mPoint(31);
             if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
             char line[320]; StringCchPrintfA(line,320,"{\"event\":\"idle-trim\",\"device\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu}\n",state->device.Get(),static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage)); QkAccountEvent(line); QkAccountBudget(state->device.Get());
         }
     }
     qkTrimmedSerial=qkPresentSerial;
+}
+
+static void CALLBACK QkHideTrimCallback(PTP_CALLBACK_INSTANCE,void *,PTP_TIMER)
+{
+    QkFacadeSharedGuard guard;
+    // SetThreadpoolTimer 不撤回已经排队的回调；旧回调不得提前消费重新登记的期限。
+    ULONGLONG now=GetTickCount64();
+    if(now<qkHideTrimDue) { QkSetHideTrimTimer(static_cast<DWORD>(qkHideTrimDue-now)); return; }
+    if(qkPresentSerial==qkTrimmedSerial) return;
+    QkFacadeCount(QkFacadeCounter::TrimFired);
+    QkS5mPoint(30);
+    if(qkPresentSerial!=qkHideTrimArmedSerial) {
+        QkFacadeCount(QkFacadeCounter::TrimCancelledPresent); return;
+    }
+    QkTrimSharedDevicesIfIdle(true);
+}
+void QkD3D11State::TrimIfIdle()
+{
+    static const bool disabled=QkLayerDiagnosticFlag(L"QUICKER_FACADE_DISABLE_HIDE_TRIM");
+    if(disabled) return;
+    QkFacadeSharedGuard guard;
+    if(qkPresentSerial==qkTrimmedSerial) return;
+    DWORD delay=QkHideTrimDelay();
+    if(!delay) { QkTrimSharedDevicesIfIdle(false); return; }
+    if(!qkHideTrimTimer) {
+        // 线程池可能在 FreeLibrary 后调用函数地址。固定模块到进程结束，从根上消除
+        // 动态卸载和回调之间的竞态；也避免在 DllMain 的 loader lock 内等待驱动/线程池。
+        // 仅延迟策略懒创建时固定；进程终止由 OS 终止工作线程并回收计时器，不等待 UI。
+        HMODULE module=nullptr;
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCWSTR>(&QkHideTrimCallback),&module)) return;
+        qkHideTrimTimer=CreateThreadpoolTimer(QkHideTrimCallback,nullptr,nullptr);
+        if(!qkHideTrimTimer) { QkFacadeTrace("QK-FACADE hide trim timer creation failed\n"); return; }
+    }
+    qkHideTrimArmedSerial=qkPresentSerial;
+    qkHideTrimDue=GetTickCount64()+delay;
+    QkSetHideTrimTimer(delay);
+    QkFacadeCount(QkFacadeCounter::TrimArmed);
+    QkS5mPoint(29);
 }
 
 HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
