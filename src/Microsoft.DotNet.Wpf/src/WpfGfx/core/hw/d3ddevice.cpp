@@ -3916,6 +3916,15 @@ CD3DDeviceLevel1::PresentWithGDI(
         UPDATELAYEREDWINDOWINFO info={}; info.cbSize=sizeof(info);
         info.pptDst=&pMILDC->GetPosition(); info.psize=&size; info.hdcSrc=dc; info.pptSrc=&src;
         info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=pMILDC->GetULWFlags();
+        // S5o 阶段 0：仅统计 WPF 请求的源脏区，不改变实际 ULW 参数。
+        if(QkFacadeCountersEnabled()) {
+            RECT full={0,0,size.cx,size.cy},dirty=full;
+            if(prcSource && !IntersectRect(&dirty,prcSource,&full)) SetRectEmpty(&dirty);
+            QkFacadeCount(QkFacadeCounter::S5oUlwCalls);
+            QkFacadeCount(prcSource?QkFacadeCounter::S5oUlwSourceRect:QkFacadeCounter::S5oUlwSourceNull);
+            QkFacadeCount(QkFacadeCounter::S5oUlwDirtyArea,static_cast<ULONGLONG>(dirty.right-dirty.left)*(dirty.bottom-dirty.top));
+            QkFacadeCount(QkFacadeCounter::S5oUlwSurfaceArea,static_cast<ULONGLONG>(size.cx)*size.cy);
+        }
         LONGLONG ulwStarted=QkFacadeClock();
         hr=QK_INTERFACE_CALL(PresentUlw,(UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError())));
         QkFacadeTiming("UpdateLayeredWindowIndirect",ulwStarted,hr);

@@ -38,6 +38,9 @@ struct QkFacadeDrawKind {
     ~QkFacadeDrawKind() { slot=saved; }
 };
 // 消融开关只在进程启动时读取；正式 B 不编译此文件。
+static bool QkFacadeClearViewEnabled() {
+    static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_CLEARVIEW",v,2)==1 && v[0]==L'1');}();return enabled;
+}
 static bool QkFacadeVertexRingEnabled() {
     static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_VERTEX_RING",v,2)==1 && v[0]==L'1');}();return enabled;
 }
@@ -389,6 +392,10 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
         char line[240]; StringCchPrintfA(line,240,"{\"event\":\"device-share\",\"device\":\"%p\",\"monitor\":\"%p\"}\n",state->device.Get(),monitor); QkAccountEvent(line);
     }
     if(SUCCEEDED(hr)) hr=state->context.As(&state->context1);
+    if(SUCCEEDED(hr)) {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS options={};
+        state->supportsClearView=SUCCEEDED(state->device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS,&options,sizeof(options))) && options.ClearView;
+    }
     ComPtr<ID3D11Device1> device1;
     if(SUCCEEDED(hr)) hr=state->device.As(&device1);
     if(SUCCEEDED(hr)) {
@@ -841,6 +848,7 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
     RECT bounds={0,0,static_cast<LONG>(width),static_cast<LONG>(height)};
     if(!IntersectRect(&clip,&clip,&bounds)) return S_OK;
     if(!count && EqualRect(&clip,&bounds)) {
+        if(QkFacadeCountersEnabled()) QkFacadeCount(QkFacadeCounter::S5oClearFull);
         if(FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
         if(targetOpaque && QkLayerNativeCopyEnabled()) rgba[3]=1;
         context->ClearRenderTargetView(target.Get(), rgba);
@@ -848,8 +856,47 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
         if(targetOpaqueState) targetOpaqueState->alphaKnownOpaque=SUCCEEDED(hr) && rgba[3]==1;
         return hr;
     }
+    if(QkFacadeCountersEnabled()) QkFacadeCount(QkFacadeCounter::S5oClearPartial);
     D3DRECT all={clip.left,clip.top,clip.right,clip.bottom};
     if(!count) {rects=&all;count=1;}
+    // D3D9 Clear 自身不混合、写全通道；下面的旧 Draw 分支也强制 blend=false/mask=15。
+    // ClearView 不受 viewport/scissor 影响，必须使用同一 clip 后的非空矩形数组。
+    if(QkFacadeClearViewEnabled() && supportsClearView && context1) {
+        D3D11_RENDER_TARGET_VIEW_DESC view={};target->GetDesc(&view);
+        bool bgra=view.Format==DXGI_FORMAT_B8G8R8A8_UNORM;
+        bool bgrx=view.Format==DXGI_FORMAT_B8G8R8X8_UNORM;
+        // BGRX 的 X 不具有 Alpha 语义；BGRA 承载逻辑 XRGB 时，旧 Draw 保留 Alpha。
+        // 只有已知整面 Alpha=1 才可写 1，不能把未知 Alpha “修好”后当作像素等价。
+        bool preserveAlpha=!targetOpaque || bgrx || (targetOpaqueState && targetOpaqueState->alphaKnownOpaque);
+        if((bgra || bgrx) && view.ViewDimension==D3D11_RTV_DIMENSION_TEXTURE2D && preserveAlpha) {
+            if(FAILED(DeviceStatus())) return WGXERR_DISPLAYSTATEINVALID;
+            if(targetOpaque) rgba[3]=1;
+            RECT batch[16];UINT used=0;bool changed=false;
+            for(UINT i=0;i<count;++i) {
+                RECT requested={rects[i].x1,rects[i].y1,rects[i].x2,rects[i].y2},actual;
+                if(!IntersectRect(&actual,&requested,&clip)) continue;
+                batch[used++]=actual;changed=true;
+                if(QkFacadeCountersEnabled()) {
+                    QkFacadeCount(QkFacadeCounter::S5oClearRects);
+                    QkFacadeCount(QkFacadeCounter::S5oClearArea,static_cast<ULONGLONG>(actual.right-actual.left)*(actual.bottom-actual.top));
+                    QkFacadeCount(QkFacadeCounter::S5oClearViewRects);
+                }
+                if(used==ARRAYSIZE(batch) || i+1==count) {
+                    context1->ClearView(target.Get(),rgba,batch,used);
+                    if(QkFacadeCountersEnabled()) QkFacadeCount(QkFacadeCounter::S5oClearView);
+                    used=0;
+                }
+            }
+            if(used) {
+                context1->ClearView(target.Get(),rgba,batch,used);
+                if(QkFacadeCountersEnabled()) QkFacadeCount(QkFacadeCounter::S5oClearView);
+            }
+            HRESULT hr=DeviceStatus();
+            if(changed && targetOpaqueState && (FAILED(hr) || (!targetOpaque && rgba[3]!=1))) targetOpaqueState->alphaKnownOpaque=false;
+            return hr;
+        }
+    }
+    if(QkFacadeCountersEnabled()) QkFacadeCount(QkFacadeCounter::S5oClearDraw);
     auto savedVS=m_boundVS; auto savedPS=m_boundPS;
     DWORD savedStages[8][33]; memcpy(savedStages,m_stages,sizeof(m_stages));
     m_boundVS.Reset(); m_boundPS.Reset();
@@ -866,6 +913,10 @@ HRESULT QkD3D11State::Clear(DWORD flags, DWORD color, UINT count, const D3DRECT 
     {
         RECT requested={rects[i].x1,rects[i].y1,rects[i].x2,rects[i].y2},actual;
         if(!IntersectRect(&actual,&requested,&clip)) continue;
+        if(QkFacadeCountersEnabled()) {
+            QkFacadeCount(QkFacadeCounter::S5oClearRects);
+            QkFacadeCount(QkFacadeCounter::S5oClearArea,static_cast<ULONGLONG>(actual.right-actual.left)*(actual.bottom-actual.top));
+        }
         float l=static_cast<float>(actual.left),t=static_cast<float>(actual.top),r=static_cast<float>(actual.right),b=static_cast<float>(actual.bottom);
         V v[] = {{l,t,0,color},{r,t,0,color},{l,b,0,color},{l,b,0,color},{r,t,0,color},{r,b,0,color}};
         hr = DrawUP(D3DPT_TRIANGLELIST, 2, v, sizeof(V));

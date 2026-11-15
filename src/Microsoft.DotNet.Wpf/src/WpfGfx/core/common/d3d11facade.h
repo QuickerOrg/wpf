@@ -31,6 +31,11 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     X(TrimArmed,"trim.armed") X(TrimFired,"trim.fired") X(TrimCancelledPresent,"trim.cancelled-present") \
     X(TrimCancelledVisible,"trim.cancelled-visible") X(TrimExecuted,"trim.executed") \
     X(PresentAttempt,"present.attempt") X(PresentFlip,"present.flip") X(PresentUlw,"present.ulw") X(PresentGpuGdi,"present.gpu-gdi") \
+    X(S5oUlwCalls,"s5o.ulw.calls") X(S5oUlwSourceRect,"s5o.ulw.source-rect") X(S5oUlwSourceNull,"s5o.ulw.source-null") \
+    X(S5oUlwDirtyArea,"s5o.ulw.dirty-area") X(S5oUlwSurfaceArea,"s5o.ulw.surface-area") \
+    X(S5oClearFull,"s5o.clear.full") X(S5oClearPartial,"s5o.clear.partial") \
+    X(S5oClearView,"s5o.clearview.calls") X(S5oClearViewRects,"s5o.clearview.rects") X(S5oClearDraw,"s5o.clear.draw") \
+    X(S5oClearRects,"s5o.clear.rects") X(S5oClearArea,"s5o.clear.area") \
     X(GetDC,"get-dc") X(Readback,"readback") X(ReadbackBytes,"readback.bytes") \
     X(SwapChainCreate,"swapchain.create") X(SwapChainRelease,"swapchain.release") X(SwapChainResizeRequest,"swapchain.resize-request") X(SwapChainResize,"swapchain.resize") X(SwapChainReuse,"swapchain.same-size-reuse") \
     X(ResourceCreate,"resource.create") X(ResourceRelease,"resource.release") \
@@ -250,6 +255,7 @@ public:
     static void RetireMediaTexture(QkTextureHandle *texture);
     ComPtr<ID3DDeviceContextState> savedContext;
     ComPtr<ID3D11DeviceContext1> context1;
+    bool supportsClearView = false;
     HRESULT CreateTexture(const D3DSURFACE_DESC *desc, UINT levels, QkTextureHandle **out, QkTexturePurpose purpose=QkTexturePurpose::Ordinary);
     HRESULT PrepareLayerBackground(QkTextureHandle *texture);
     HRESULT ValidateLayerBackground(QkTextureHandle *texture);
