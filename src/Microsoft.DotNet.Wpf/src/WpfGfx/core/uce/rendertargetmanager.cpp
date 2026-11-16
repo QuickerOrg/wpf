@@ -200,6 +200,15 @@ CRenderTargetManager::ReleaseTargets()
 //                            in the new display set.
 //
 //------------------------------------------------------------------------------
+#if QUICKER_WPF_D3D11_FACADE
+// 门面共享设备可失效而显示拓扑不变。隐藏 HWND 也必须丢弃旧 meta RT，
+// 否则 VisualCache 重建会再次从它取得已退休设备；复用原显示失效释放入口。
+void CRenderTargetManager::ReleaseDeviceResources()
+{
+    IGNORE_HR(NotifyDisplaySetChange(true, m_lastKnownDisplayCount));
+}
+#endif
+
 HRESULT 
 CRenderTargetManager::NotifyDisplaySetChange(bool invalid, int displayCount)
 {
@@ -414,6 +423,9 @@ CRenderTargetManager::HandleRenderErrors(
     HRESULT hr
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    if(FAILED(hr)) QkFacadeRecoveryTrace("RenderTargetManager.HandleRenderErrors",hr);
+#endif
     HRESULT hrReturned = hr;
     
     if (FAILED(hr))

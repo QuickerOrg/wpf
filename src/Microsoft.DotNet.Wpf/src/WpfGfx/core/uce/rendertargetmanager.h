@@ -112,6 +112,9 @@ public:
 
     // Releases the render targets managed by this object.
     void ReleaseTargets();
+#if QUICKER_WPF_D3D11_FACADE
+    void ReleaseDeviceResources();
+#endif
 
     HRESULT IsGPUThrottlingEnabled(
             __out_ecount(1) bool *pfEnabled

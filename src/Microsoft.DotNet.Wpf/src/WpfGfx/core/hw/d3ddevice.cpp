@@ -2351,7 +2351,7 @@ CD3DDeviceLevel1::CreateTexture(
 {
 #if QUICKER_WPF_D3D11_FACADE
     if(pSharedHandle) return QkFacadeUnimpl("CreateTexture.shared");
-    if(m_fDeviceLostProcessed) return WGXERR_DISPLAYSTATEINVALID;
+    if(m_fDeviceLostProcessed) { QkFacadeRecoveryTrace("CreateTexture.device-lost",WGXERR_DISPLAYSTATEINVALID,0,m_facade->generation); return WGXERR_DISPLAYSTATEINVALID; }
     return m_facade->CreateTexture(pSurfDesc,uLevels,ppD3DTexture,purpose);
 #else
 
@@ -2988,7 +2988,7 @@ CD3DDeviceLevel1::SetRenderTarget(
     )
 {
 #if QUICKER_WPF_D3D11_FACADE
-    if(pD3DSurface->m_facadeGeneration!=m_facade->generation) return WGXERR_DISPLAYSTATEINVALID;
+    if(pD3DSurface->m_facadeGeneration!=m_facade->generation) { QkFacadeRecoveryTrace("SetRenderTarget.reject-generation",WGXERR_DISPLAYSTATEINVALID,pD3DSurface->m_facadeGeneration,m_facade->generation); return WGXERR_DISPLAYSTATEINVALID; }
     m_desc=pD3DSurface->Desc(); m_pCurrentRenderTargetNoRef=pD3DSurface;
     HRESULT hr=m_facade->BindTarget(pD3DSurface->m_facadeRTV.Get(),m_desc.Width,m_desc.Height,m_desc.Format==D3DFMT_X8R8G8B8,pD3DSurface->GetD3DSurfaceNoAddRef()->opaqueState); if(FAILED(hr)) return hr;
     SetClipSet(false); MilPointAndSizeL vp={0,0,static_cast<INT>(m_desc.Width),static_cast<INT>(m_desc.Height)};

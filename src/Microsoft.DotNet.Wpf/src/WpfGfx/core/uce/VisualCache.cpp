@@ -151,6 +151,9 @@ Cleanup:
 void
 CMilVisualCache::ReleaseDeviceResources()
 {    
+#if QUICKER_WPF_D3D11_FACADE
+    QkFacadeRecoveryTrace("VisualCache.ReleaseDeviceResources");
+#endif
     // Throw away our cached texture.
     ReleaseInterface(m_pIRenderTargetBitmap);
 
@@ -420,6 +423,9 @@ CMilVisualCache::IsValid() const
 void
 CMilVisualCache::NotifyDeviceLost()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkFacadeRecoveryTrace("VisualCache.NotifyDeviceLost");
+#endif
     ReleaseInterface(m_pDisplaySet);
     
     ReleaseDeviceResources();
@@ -668,6 +674,9 @@ CMilVisualCache::Update(
     }
 
 Cleanup:
+#if QUICKER_WPF_D3D11_FACADE
+    if(FAILED(hr)) QkFacadeRecoveryTrace("VisualCache.Update.failed",hr);
+#endif
     // Leave the resource in a good state.
     LeaveResource();
     

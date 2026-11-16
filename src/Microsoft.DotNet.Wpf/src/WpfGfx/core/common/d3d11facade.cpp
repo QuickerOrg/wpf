@@ -26,6 +26,15 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
     DWORD written; WriteFile(file,line,static_cast<DWORD>(strlen(line)),&written,nullptr);CloseHandle(file);
 }
 
+// S5q 恢复诊断默认关闭，仅实验显式启用时记录错误位置和资源代际。
+void QkFacadeRecoveryTrace(const char *location, HRESULT hr, ULONGLONG resourceGeneration, ULONGLONG deviceGeneration)
+{
+    static const bool enabled=[](){ WCHAR v[2]={}; return GetEnvironmentVariableW(L"QUICKER_FACADE_RECOVERY_DIAGNOSTICS",v,2)==1 && v[0]==L'1'; }();
+    if(!enabled) return;
+    char line[320]; StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE recovery location=%s hr=0x%08x resource-generation=%llu device-generation=%llu tick=%llu\n",location,hr,resourceGeneration,deviceGeneration,GetTickCount64());
+    QkFacadeTrace(line);
+}
+
 // 分类只覆盖一次实际 Draw，嵌套调用退出时恢复，不改变绘制顺序。
 struct QkFacadeBindingReset {
     QkD3D11State &state;
@@ -282,7 +291,10 @@ static void QkTrimSharedDevicesIfIdle(bool delayed)
     // 仅进程全部顶层窗口隐藏后的空闲边界回收驱动内部重命名/暂存存储。
     // Trim 保留应用持有的资源内容；不清空 WPF 缓存，不触发 GC，不等待或跳过动画帧。
     std::set<ID3D11Device*> trimmed;
-    for(auto state:qkSharedStates) if(trimmed.insert(state->device.Get()).second) {
+    for(auto state:qkSharedStates) {
+        // 调用方均持共享锁；先过滤失效包装，再对实际设备去重。同步旧策略共用此处。
+        if(FAILED(state->DeviceStatus())) { QkFacadeCount(QkFacadeCounter::TrimSkippedRemoved); QkFacadeRecoveryTrace("Trim.skip-removed",WGXERR_DISPLAYSTATEINVALID,0,state->generation); continue; }
+        if(!trimmed.insert(state->device.Get()).second) continue;
         ComPtr<IDXGIDevice3> dxgi;
         if(SUCCEEDED(state->device.As(&dxgi))) {
             PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
@@ -632,7 +644,7 @@ HRESULT QkD3D11State::SetSamplerState(DWORD sampler, D3DSAMPLERSTATETYPE type, D
 }
 HRESULT QkD3D11State::SetTexture(DWORD n, QkBaseTextureHandle *p) {
     if(n>=8) return E_INVALIDARG;
-    if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    if(p && p->generation!=generation) { QkFacadeRecoveryTrace("SetTexture.reject-generation",WGXERR_DISPLAYSTATEINVALID,p->generation,generation); return WGXERR_DISPLAYSTATEINVALID; }
     m_textures[n]=p; return S_OK;
 }
 HRESULT QkD3D11State::SetVertexShader(QkVertexShaderHandle *p) {

@@ -14,6 +14,7 @@
 // WPF 内部执行对象；不实现任何 D3D9 COM 接口。
 HRESULT QkFacadeUnimpl(const char *name);
 void QkFacadeTrace(const char *line);
+void QkFacadeRecoveryTrace(const char *location, HRESULT hr=S_OK, ULONGLONG resourceGeneration=0, ULONGLONG deviceGeneration=0);
 // 默认关闭的呈现边界计时；只测原生调用，不改 WPF 调度算法。
 LONGLONG QkFacadeClock();
 // S5m 专用诊断：既有接口计时与独立输出路径必须同时启用；正式构建不使用此 DLL。
@@ -29,7 +30,7 @@ void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detai
 // S5h 聚合计数默认关闭；启用时只做原子累加，由实验夹具在计时边界外读取，不逐帧写文件。
 #define QK_FACADE_COUNTER_LIST(X) \
     X(TrimArmed,"trim.armed") X(TrimFired,"trim.fired") X(TrimCancelledPresent,"trim.cancelled-present") \
-    X(TrimCancelledVisible,"trim.cancelled-visible") X(TrimExecuted,"trim.executed") \
+    X(TrimCancelledVisible,"trim.cancelled-visible") X(TrimExecuted,"trim.executed") X(TrimSkippedRemoved,"trim.skipped-removed") \
     X(PresentAttempt,"present.attempt") X(PresentFlip,"present.flip") X(PresentUlw,"present.ulw") X(PresentGpuGdi,"present.gpu-gdi") \
     X(S5oUlwCalls,"s5o.ulw.calls") X(S5oUlwSourceRect,"s5o.ulw.source-rect") X(S5oUlwSourceNull,"s5o.ulw.source-null") \
     X(S5oUlwDirtyArea,"s5o.ulw.dirty-area") X(S5oUlwSurfaceArea,"s5o.ulw.surface-area") \

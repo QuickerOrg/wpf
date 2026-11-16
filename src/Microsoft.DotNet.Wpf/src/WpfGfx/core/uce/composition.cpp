@@ -2260,6 +2260,12 @@ CComposition::ProcessRenderingStatus(RENDERING_STATUS status)
         case RENDERING_STATUS_DEVICE_LOST:
         case RENDERING_STATUS_DEVICE_RELEASED:
         {
+#if QUICKER_WPF_D3D11_FACADE
+            if (status == RENDERING_STATUS_DEVICE_LOST)
+            {
+                m_pRenderTargetManager->ReleaseDeviceResources();
+            }
+#endif
             GetVisualCacheManagerNoRef()->NotifyDeviceLost();
             stateNew = MilCompositionDeviceState::NoDevice;
         }
