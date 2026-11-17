@@ -1,7 +1,47 @@
-#requires -Version 7.0
+#requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# dotnet MSBuild may filter PSModulePath inherited by Windows PowerShell 5.1.
+# Import only the host's built-in modules by absolute path; no global env edit.
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+    Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
+    Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
+}
 
+# PS 5.1 JSON adapter: keep object keys and empty arrays used by deps/manifest checks.
+function ConvertTo-WpfMap($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $map=@{}
+        foreach($property in $Value.PSObject.Properties) { $map[$property.Name]=ConvertTo-WpfMap $property.Value }
+        return $map
+    }
+    if ($Value -is [Array]) {
+        $array=@(foreach($entry in $Value) { ConvertTo-WpfMap $entry })
+        return ,$array
+    }
+    return $Value
+}
+function Read-WpfJson([string]$Path) {
+    ConvertTo-WpfMap (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Path)))
+}
+function Get-WpfRelativePath([string]$Root,[string]$Path) {
+    $prefix=[IO.Path]::GetFullPath($Root).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
+    $full=[IO.Path]::GetFullPath($Path)
+    Assert-Wpf ($full.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) 'Path outside root'
+    return $full.Substring($prefix.Length)
+}
+function Test-WpfForkFile([string]$Name) {
+    return $Name -notin @('PresentationNative_cor3.dll','vcruntime140_cor3.dll','D3DCompiler_47_cor3.dll')
+}
+function Assert-WpfReleaseFile($Facts,[string]$Name,[bool]$RequireSigned=$false) {
+    Assert-Wpf (-not $Facts.fileVersion.StartsWith('42.')) "Development 42.* forbidden: $Name"
+    if(Test-WpfForkFile $Name) {
+        Assert-Wpf ($Facts.fileVersion -match '^10\.1\.\d+\.\d+$') "Fork FileVersion must be 10.1.*: $Name"
+        if($Facts.ilOnly -and $Name -ne 'DirectWriteForwarder.dll') { Assert-Wpf $Facts.readyToRun "IL-only file requires R2R: $Name" }
+        if($RequireSigned) { Assert-Wpf ($Facts.signatureStatus -eq 'Valid') "RequireSigned rejects unsigned/dryrun: $Name" }
+    }
+}
 function Get-WpfNames {
     @('DirectWriteForwarder','PresentationCore','PresentationFramework',
       'PresentationFramework-SystemCore','PresentationFramework-SystemData','PresentationFramework-SystemDrawing',
@@ -36,6 +76,7 @@ function Get-PeFacts([string]$Path) {
         $optional = $pe + 24; $stream.Position = $optional; $magic = $reader.ReadUInt16()
         $directories = $optional + $(if ($magic -eq 0x20b) {112} else {96})
         $stream.Position = $directories + 8; $importRva = $reader.ReadUInt32()
+        $stream.Position = $directories + 14*8; $corRva=$reader.ReadUInt32()
         $sections = @()
         $stream.Position = $optional + $optionalSize
         for ($i=0; $i -lt $count; $i++) {
@@ -48,6 +89,16 @@ function Get-PeFacts([string]$Path) {
         function Convert-Rva([uint32]$Rva) {
             foreach ($s in $sections) { if ($Rva -ge $s.start -and $Rva -lt ($s.start+$s.size)) { return [long]($s.raw+$Rva-$s.start) } }
             throw "PE RVA 越界: $Path / $Rva"
+        }
+        $ilOnly=$false; $readyToRun=$false
+        if($corRva) {
+            $corOffset=Convert-Rva $corRva
+            $stream.Position=$corOffset+16; $flags=$reader.ReadUInt32(); $ilOnly=($flags -band 1) -ne 0
+            $stream.Position=$corOffset+64; $nativeRva=$reader.ReadUInt32(); $nativeSize=$reader.ReadUInt32()
+            if($nativeRva -and $nativeSize -ge 16) {
+                $stream.Position=Convert-Rva $nativeRva
+                $readyToRun=$reader.ReadUInt32() -eq 0x00525452
+            }
         }
         $imports = @()
         if ($importRva) {
@@ -71,6 +122,7 @@ function Get-PeFacts([string]$Path) {
     [ordered]@{
         machine=('{0:X4}' -f $machine); assemblyVersion=$assembly
         fileVersion=('{0}.{1}.{2}.{3}' -f $v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart)
+        productVersion=$v.ProductVersion; informationalVersion=($v.ProductVersion -replace ' @Commit:.*$',''); ilOnly=$ilOnly; readyToRun=$readyToRun
         sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
         imports=@($imports | Sort-Object -Unique)
     }
@@ -78,7 +130,7 @@ function Get-PeFacts([string]$Path) {
 
 function Read-WpfManifest([string]$Root, [string]$Rid) {
     Assert-Wpf ($Rid -cin @('win-x64','win-arm64')) "必须显式指定 win-x64 或 win-arm64 RID；当前 '$Rid'，不支持 x86 或 RID fallback。"
-    $m=Get-Content -LiteralPath "$Root/manifests/$Rid.json" -Raw | ConvertFrom-Json -AsHashtable
+    $m=Read-WpfJson "$Root/manifests/$Rid.json"
     Assert-Wpf ($m.rid -ceq $Rid) 'manifest RID 不一致'
     $expected=@(Get-WpfNames)
     if ($Rid -eq 'win-x64') { $expected += 'D3DCompiler_47_cor3.dll' }
@@ -95,15 +147,24 @@ function Read-WpfManifest([string]$Root, [string]$Rid) {
     return $m
 }
 
-function Test-WpfInput([string]$Root, [string]$Rid) {
+function Test-WpfInput([string]$Root, [string]$Rid, [bool]$RequireSigned=$false) {
     $m=Read-WpfManifest $Root $Rid
-    $actual=@(Get-ChildItem -LiteralPath "$Root/runtimes/$Rid" -File -Recurse | ForEach-Object { [IO.Path]::GetRelativePath($Root,$_.FullName).Replace('\','/') })
+    $actual=@(Get-ChildItem -LiteralPath "$Root/runtimes/$Rid" -File -Recurse | ForEach-Object { (Get-WpfRelativePath $Root $_.FullName).Replace('\','/') })
     Assert-Set $actual @($m.files.pathInPackage) '包输入'
     [xml]$assets=Get-Content -LiteralPath "$Root/buildTransitive/assets/$Rid.props" -Raw
     $items=@($assets.Project.ItemGroup.ChildNodes | Where-Object { $_.NodeType -eq 'Element' })
     Assert-Set @($items | ForEach-Object { $_.GetAttribute('PathInPackage') }) @($m.files.pathInPackage) 'MSBuild 声明'
     foreach($f in $m.files) {
         $facts=Get-PeFacts "$Root/$($f.pathInPackage)"
+        if($RequireSigned -and (Test-WpfForkFile $f.name)) {
+            $signature=Get-AuthenticodeSignature -LiteralPath "$Root/$($f.pathInPackage)"
+            $facts.signatureStatus=$signature.Status.ToString()
+            Assert-Wpf ($f.signing.action -eq 'signed') "RequireSigned rejects dryrun manifest: $($f.name)"
+            Assert-Wpf ($signature.SignerCertificate -and $signature.TimeStamperCertificate -and
+                $signature.SignerCertificate.Thumbprint -eq $f.signing.signerThumbprint -and
+                $signature.TimeStamperCertificate.Thumbprint -eq $f.signing.timestampThumbprint) "Signer/timestamp mismatch: $($f.name)"
+        }
+        Assert-WpfReleaseFile $facts $f.name $RequireSigned
         foreach($key in @('machine','assemblyVersion','fileVersion','sha256')) {
             Assert-Wpf ($facts[$key] -ceq $f[$key]) "输入 $($f.name) $key 不符"
         }
@@ -120,7 +181,7 @@ function Test-WpfInput([string]$Root, [string]$Rid) {
 
 function Test-WpfOutput([string]$Root, [string]$Rid, [string]$OutputDirectory, [string]$DepsFile, [bool]$SelfContained) {
     $m=Read-WpfManifest $Root $Rid
-    $deps=Get-Content -LiteralPath $DepsFile -Raw | ConvertFrom-Json -AsHashtable
+    $deps=Read-WpfJson $DepsFile
     Assert-Wpf ($deps.runtimeTarget.name.EndsWith("/$Rid",[StringComparison]::Ordinal)) 'deps runtimeTarget RID 不符'
     $target=$deps.targets[$deps.runtimeTarget.name]
     $declared=@{}
@@ -152,6 +213,7 @@ function Test-WpfOutput([string]$Root, [string]$Rid, [string]$OutputDirectory, [
         $path=Join-Path $OutputDirectory $f.name
         Assert-Wpf (Test-Path -LiteralPath $path -PathType Leaf) "缺少输出 $path"
         $facts=Get-PeFacts $path
+        Assert-WpfReleaseFile $facts $f.name
         foreach($key in @('sha256','machine','assemblyVersion','fileVersion')) { Assert-Wpf ($facts[$key] -ceq $f[$key]) "输出 $($f.name) $key 不符" }
     }
     $all=@(Get-ChildItem -LiteralPath $OutputDirectory -File -Recurse)

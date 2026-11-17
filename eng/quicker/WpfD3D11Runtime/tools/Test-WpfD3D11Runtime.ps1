@@ -1,4 +1,4 @@
-#requires -Version 7.0
+#requires -Version 5.1
 [CmdletBinding()]
 param(
     [ValidateSet('Input','Output')][string]$Mode,
@@ -7,13 +7,14 @@ param(
     [string]$OutputDirectory,
     [string]$DepsFile,
     [ValidateSet('true','false')][string]$SelfContained='false',
+    [switch]$RequireSigned,
     [string]$ReportPath
 )
 $ErrorActionPreference='Stop'
-. "$PSScriptRoot/Payload.Common.ps1"
+. ([scriptblock]::Create([IO.File]::ReadAllText("$PackageRoot/tools/Payload.Common.ps1")))
 try {
     if($Mode -eq 'Input') {
-        $m=Test-WpfInput $PackageRoot $RuntimeIdentifier
+        $m=Test-WpfInput $PackageRoot $RuntimeIdentifier $RequireSigned.IsPresent
         $result=@{mode='input';rid=$RuntimeIdentifier;files=$m.files.Count;passed=$true}
     } else { $result=Test-WpfOutput $PackageRoot $RuntimeIdentifier $OutputDirectory $DepsFile ($SelfContained -eq 'true') }
     $json=$result | ConvertTo-Json -Depth 10

@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
     <WpfD3D11RuntimeRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))/</WpfD3D11RuntimeRoot>
-    <WpfD3D11RuntimePowerShell Condition="'$(WpfD3D11RuntimePowerShell)' == ''">pwsh</WpfD3D11RuntimePowerShell>
+    <WpfD3D11RuntimePowerShell Condition="'$(WpfD3D11RuntimePowerShell)' == ''">powershell.exe</WpfD3D11RuntimePowerShell>
   </PropertyGroup>
 </Project>

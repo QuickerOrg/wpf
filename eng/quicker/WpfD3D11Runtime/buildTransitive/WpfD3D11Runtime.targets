@@ -15,8 +15,11 @@
     <_WpfD3D11Support Include="$(WpfD3D11RuntimeRoot)manifests/$(RuntimeIdentifier).json" Condition="'$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64'">
       <PayloadPath>manifests/$(RuntimeIdentifier).json</PayloadPath>
     </_WpfD3D11Support>
-    <_WpfD3D11Support Include="$(WpfD3D11RuntimeRoot)tools/Payload.Common.ps1;$(WpfD3D11RuntimeRoot)tools/Test-WpfD3D11Runtime.ps1">
+    <_WpfD3D11Support Condition="'$(WpfD3D11CopyVerifier)' == 'true'" Include="$(WpfD3D11RuntimeRoot)tools/Payload.Common.ps1;$(WpfD3D11RuntimeRoot)tools/Test-WpfD3D11Runtime.ps1">
       <PayloadPath>tools/%(Filename)%(Extension)</PayloadPath>
+    </_WpfD3D11Support>
+    <_WpfD3D11Support Include="$(WpfD3D11RuntimeRoot)licenses/*">
+      <PayloadPath>licenses/%(Filename)%(Extension)</PayloadPath>
     </_WpfD3D11Support>
   </ItemGroup>
 
