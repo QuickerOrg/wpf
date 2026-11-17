@@ -1,15 +1,16 @@
-#requires -Version 7.0
+#requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Directory,
-    [Parameter(Mandatory)][string]$QuickerRepository,
+    [string]$QuickerRepository,
+    [string]$MutexScript = "$PSScriptRoot/tools/RunWithMutex.ps1",
     [string]$SignTool,
     [string]$CertificateThumbprint,
     [string]$TimestampUrl,
     [switch]$Execute
 )
 $ErrorActionPreference='Stop'
-. "$PSScriptRoot/tools/Payload.Common.ps1"
+. ([scriptblock]::Create([IO.File]::ReadAllText("$PSScriptRoot/tools/Payload.Common.ps1")))
 $records=@(); $owned=@()
 foreach($name in Get-WpfNames) {
     $path=(Get-Item -LiteralPath "$Directory/$name").FullName
@@ -18,10 +19,12 @@ foreach($name in Get-WpfNames) {
 }
 if($Execute) {
     Assert-Wpf ($SignTool -and $CertificateThumbprint -and $TimestampUrl) 'Explicit tool, certificate thumbprint and timestamp URL required.'
+    if($QuickerRepository) { $MutexScript=Join-Path $QuickerRepository 'Tools/Build/RunWithMutex.ps1' }
+    Assert-Wpf (Test-Path -LiteralPath $MutexScript -PathType Leaf) 'Mutex script missing.'
     # Reuse Bridge publishing's mutex, signtool arguments and post-sign checks.
     # No certificate creation/import, no implicit certificate selection.
     $arguments=@('sign','/sha1',$CertificateThumbprint,'/tr',$TimestampUrl,'/td','sha256','/fd','sha256')+$owned
-    & "$QuickerRepository/Tools/Build/RunWithMutex.ps1" -MutexName 'Local\Quicker.CodeSigning' `
+    & $MutexScript -MutexName 'Local\Quicker.CodeSigning' `
         -CommandPath $SignTool -WorkingDirectory $Directory -TimeoutSeconds 300 -RetryCount 0 -CommandArguments $arguments
     if($LASTEXITCODE) { throw 'WPF signing failed' }
 }
@@ -33,6 +36,12 @@ foreach($name in @(Get-WpfNames)+@('D3DCompiler_47_cor3.dll')) {
     $thumb=if($sig.SignerCertificate){$sig.SignerCertificate.Thumbprint}else{$null}
     if($Execute -and -not $upstream) {
         Assert-Wpf ($sig.Status -eq 'Valid' -and $thumb -eq $CertificateThumbprint -and $sig.TimeStamperCertificate) "Signature/timestamp verification failed: $path"
+    }
+    if($Execute) {
+        # Verify both fork and preserved upstream files with the same Windows policy.
+        & $SignTool verify /pa $path | Out-Host
+        Assert-Wpf ($LASTEXITCODE -eq 0) "signtool verify /pa failed: $path"
+        Assert-Wpf ($sig.Status -eq 'Valid') "Authenticode verification failed: $path"
     }
     $records+=@{name=$name;path=[IO.Path]::GetFullPath($path);origin=if($upstream){'upstream'}else{'fork'};
         action=if($upstream){'preserve'}elseif($Execute){'signed'}else{'unsigned/dryrun'};

@@ -22,7 +22,7 @@ FDD 需要 .NET 10 WindowsDesktop 共享框架；使用私有 WPF 后，共享�
 <ItemGroup><PackageReference Include="WpfD3D11Runtime" Version="[10.0.14-d3d11.1]" PrivateAssets="all" /></ItemGroup>
 ```
 
-消费端验证器兼容 Windows PowerShell 5.1（默认 powershell.exe，可设置 WpfD3D11RuntimePowerShell）。构建/打包入口要求 PowerShell 7。
+消费端验证器兼容 Windows PowerShell 5.1（默认 powershell.exe，可设置 WpfD3D11RuntimePowerShell）。开发机编译/R2R 入口仍要求 PowerShell 7；签名、打包、bundle 导出与发布入口兼容 Windows PowerShell 5.1，发布机不需要 WPF 源码树。
 SDK 10.0.403 的 Build/Publish 冲突项由包精确恢复；SDK 升级需重新验收。
 最终 deps、PE 版本、架构与哈希不符时构建失败。licenses/WpfD3D11Runtime 仅携带许可/说明和 manifest；验证器默认不进入应用输出。诊断时可显式设置 WpfD3D11CopyVerifier=true；安装器不收此验证器。Test-PrivateWpfPayload 使用受信的外部 PackageRoot。
 

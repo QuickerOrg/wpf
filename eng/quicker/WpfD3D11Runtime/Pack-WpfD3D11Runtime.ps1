@@ -1,4 +1,4 @@
-#requires -Version 7.0
+#requires -Version 5.1
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$X64InputDirectory,
@@ -10,24 +10,31 @@ param(
     [Parameter(Mandatory)][string]$ArtifactsPath,
     [Parameter(Mandatory)][string]$FeedDirectory,
     [Parameter(Mandatory)][string]$NuGetConfig,
+    [string]$SourceSliceCommit,
+    [string]$SourceWpfTree,
     [switch]$RequireSigned
 )
 $ErrorActionPreference='Stop'
-. "$PSScriptRoot/tools/Payload.Common.ps1"
+. ([scriptblock]::Create([IO.File]::ReadAllText("$PSScriptRoot/tools/Payload.Common.ps1")))
 $build=(Read-WpfJson $X64Manifest).build
 $armBuild=(Read-WpfJson $Arm64Manifest).build
 Assert-Wpf ($build.packageVersion -ceq $armBuild.packageVersion -and $build.forkCommit -ceq $armBuild.forkCommit) 'Architecture provenance/version mismatch'
 $version=$build.packageVersion
 Assert-Wpf ($version -match '^\d+\.\d+\.\d+-d3d11\.\d+$') 'Expected servicing baseline-d3d11.N package version'
 
-$sliceCommit=(& git -C $PSScriptRoot rev-parse HEAD).Trim()
-if($LASTEXITCODE) { throw '无法登记 slice HEAD' }
-$wpfTree=(& git -C $PSScriptRoot rev-parse HEAD:src/wpf).Trim()
-if($LASTEXITCODE) { throw '无法登记 slice WPF 树映射' }
-foreach($path in @($StagingDirectory,$ArtifactsPath,$FeedDirectory,$NuGetConfig)) {
-    Assert-Wpf ([IO.Path]::IsPathFullyQualified($path)) "必须使用绝对路径: $path"
+if(-not $SourceSliceCommit) {
+    $SourceSliceCommit=(& git -C $PSScriptRoot rev-parse HEAD).Trim()
+    if($LASTEXITCODE) { throw 'Cannot record slice HEAD' }
 }
-Assert-Wpf (-not (Test-Path -LiteralPath $StagingDirectory)) 'staging 已存在；为保证无旧输入，请使用新的空目录'
+if(-not $SourceWpfTree) {
+    $SourceWpfTree=(& git -C $PSScriptRoot rev-parse HEAD:src/wpf).Trim()
+    if($LASTEXITCODE) { throw 'Cannot record slice WPF tree' }
+}
+Assert-Wpf ($SourceSliceCommit -match '^[0-9a-f]{40}$' -and $SourceWpfTree -match '^[0-9a-f]{40}$') 'Invalid source provenance'
+foreach($path in @($StagingDirectory,$ArtifactsPath,$FeedDirectory,$NuGetConfig)) {
+    Assert-Wpf ($path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+[\\/])') "Absolute path required: $path"
+}
+Assert-Wpf (-not (Test-Path -LiteralPath $StagingDirectory)) 'Use a new staging directory to exclude stale inputs'
 New-Item -ItemType Directory -Path $StagingDirectory -Force | Out-Null
 $packageFiles=[Collections.Generic.List[string]]::new()
 function Add-File([string]$Source,[string]$Relative) {
@@ -50,7 +57,7 @@ foreach($input in @(
     @{rid='win-x64';directory=$X64InputDirectory;manifest=$X64Manifest},
     @{rid='win-arm64';directory=$Arm64InputDirectory;manifest=$Arm64Manifest})) {
     $rid=$input.rid
-    $overlay=Get-Content -LiteralPath $input.manifest -Raw | ConvertFrom-Json -AsHashtable
+    $overlay=Read-WpfJson $input.manifest
     Assert-Set @($overlay.files.name) @(Get-WpfNames) "$rid overlay"
     $files=@(); $xml=[Collections.Generic.List[string]]::new()
     foreach($entry in @($overlay.files)+$(if($rid -eq 'win-x64'){@{name='D3DCompiler_47_cor3.dll'}}else{@()})) {
@@ -58,8 +65,8 @@ foreach($input in @(
         $source=if($compiler){$X64Compiler}else{Join-Path $input.directory $entry.name}
         $facts=Get-PeFacts $source
         if($compiler) {
-            Assert-Wpf ($facts.sha256 -ceq 'A05F99734F7C4822FEFC12B367AF21FD0976ED6608752FB1E1E80B6ECE7ECBBB') 'x64 compiler 必须与 PKG0 官方 10.0.11 缓存来源相同'
-        } else { Assert-Wpf ($facts.sha256 -ceq $entry.sha256) "overlay 哈希不符 $source" }
+            Assert-Wpf ($facts.sha256 -ceq 'A05F99734F7C4822FEFC12B367AF21FD0976ED6608752FB1E1E80B6ECE7ECBBB') 'x64 compiler must match the PKG0 official 10.0.11 cache hash'
+        } else { Assert-Wpf ($facts.sha256 -ceq $entry.sha256) "Overlay hash mismatch: $source" }
         $origin=if(Test-WpfForkFile $entry.name){'fork'}else{'upstream'}
         $signing=if($compiler){
             $sig=Get-AuthenticodeSignature -LiteralPath $source
@@ -104,7 +111,7 @@ foreach($input in @(
         signingMode=$overlay.signing.mode;requireSigned=$RequireSigned.IsPresent
         equivalence=$overlay.equivalence;referenceInputsSha256=$overlay.referenceInputsSha256
         r2rScriptSha256=$overlay.r2rScriptSha256;overlayCommonSha256=$overlay.overlayCommonSha256
-        sourceSliceCommit=$sliceCommit; sourceWpfTree=$wpfTree; forkCommit=$overlay.build.forkCommit; forkTree=$overlay.build.forkTree
+        sourceSliceCommit=$SourceSliceCommit; sourceWpfTree=$SourceWpfTree; forkCommit=$overlay.build.forkCommit; forkTree=$overlay.build.forkTree
         forkTreeMapping=$overlay.build.forkCommitStatus
         sourceManifest=[IO.Path]::GetFullPath($input.manifest);sourceManifestSha256=(Get-FileHash -LiteralPath $input.manifest).Hash
         compilerSource=if($rid -eq 'win-x64'){'Microsoft.WindowsDesktop.App.Runtime.win-x64/10.0.11 local official NuGet cache, same hash as PKG0 section 11'}else{'OS System32 D3DCompiler_47.dll prerequisite; NOT redistributed'}
@@ -121,7 +128,7 @@ $project=@"
     <Authors>QuickerOrg</Authors><Description>P2 LOCAL CANDIDATE; redistribution clearance pending; DO NOT PUBLISH</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput><EnableDefaultItems>false</EnableDefaultItems>
     <PackageReadmeFile>README.md</PackageReadmeFile><PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
-    <!-- 无顶层 lib 是 runtime-only 设计；ps1 由 MSBuild 显式调用，不使用 NuGet install.ps1。 -->
+    <!-- Runtime-only package; MSBuild explicitly invokes validation scripts. -->
     <NoWarn>NU5128;NU5111</NoWarn><NuGetAudit>false</NuGetAudit>
     <RepositoryCommit>$($build.forkCommit)</RepositoryCommit><RepositoryType>git</RepositoryType><RepositoryUrl>https://github.com/QuickerOrg/wpf</RepositoryUrl>
     <PackageOutputPath>$([Security.SecurityElement]::Escape($FeedDirectory))</PackageOutputPath>
@@ -132,9 +139,12 @@ $items
 </Project>
 "@
 [IO.File]::WriteAllText("$StagingDirectory/WpfD3D11Runtime.csproj",$project,[Text.UTF8Encoding]::new($false))
-& dotnet restore "$StagingDirectory/WpfD3D11Runtime.csproj" --configfile $NuGetConfig --artifacts-path $ArtifactsPath -p:NuGetAudit=false
-if($LASTEXITCODE) { throw '离线 pack restore 失败' }
-& dotnet pack "$StagingDirectory/WpfD3D11Runtime.csproj" --no-build --no-restore --artifacts-path $ArtifactsPath
-if($LASTEXITCODE) { throw 'pack 失败' }
+# The release workspace may be inside Quicker or another repository. Never inherit
+# its build hooks, signing targets, central packages or restore dependencies.
+$isolation=@('-p:ImportDirectoryBuildProps=false','-p:ImportDirectoryBuildTargets=false','-p:ImportDirectoryPackagesProps=false','-p:NuGetAudit=false')
+& dotnet restore "$StagingDirectory/WpfD3D11Runtime.csproj" --configfile $NuGetConfig --artifacts-path $ArtifactsPath @isolation
+if($LASTEXITCODE) { throw 'Offline pack restore failed' }
+& dotnet pack "$StagingDirectory/WpfD3D11Runtime.csproj" --no-build --no-restore --artifacts-path $ArtifactsPath @isolation
+if($LASTEXITCODE) { throw 'Pack failed' }
 $nupkg=Join-Path $FeedDirectory "WpfD3D11Runtime.$version.nupkg"
 Write-Output "LOCAL ONLY: $nupkg SHA256=$((Get-FileHash -LiteralPath $nupkg).Hash)"
