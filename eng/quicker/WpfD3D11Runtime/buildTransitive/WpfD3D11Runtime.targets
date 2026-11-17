@@ -1,0 +1,68 @@
+<Project>
+  <PropertyGroup>
+    <IncludeFileVersionsInDependencyFile>true</IncludeFileVersionsInDependencyFile>
+    <_WpfD3D11RealBuild Condition="'$(DesignTimeBuild)' != 'true' and !$([System.String]::Copy('$(MSBuildProjectName)').EndsWith('_wpftmp'))">true</_WpfD3D11RealBuild>
+    <_WpfD3D11SelfContained>false</_WpfD3D11SelfContained>
+    <_WpfD3D11SelfContained Condition="'$(SelfContained)' == 'true'">true</_WpfD3D11SelfContained>
+    <_WpfD3D11Verifier>$(WpfD3D11RuntimeRoot)tools/Test-WpfD3D11Runtime.ps1</_WpfD3D11Verifier>
+  </PropertyGroup>
+  <Import Project="assets/$(RuntimeIdentifier).props" Condition="Exists('$(MSBuildThisFileDirectory)assets/$(RuntimeIdentifier).props')" />
+  <ItemGroup>
+    <_WpfD3D11All Include="@(_WpfD3D11Runtime);@(_WpfD3D11Native)" />
+    <_WpfD3D11Support Include="$(WpfD3D11RuntimeRoot)README.md;$(WpfD3D11RuntimeRoot)LICENSE.txt;$(WpfD3D11RuntimeRoot)THIRD-PARTY-NOTICES.txt">
+      <PayloadPath>%(Filename)%(Extension)</PayloadPath>
+    </_WpfD3D11Support>
+    <_WpfD3D11Support Include="$(WpfD3D11RuntimeRoot)manifests/$(RuntimeIdentifier).json" Condition="'$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64'">
+      <PayloadPath>manifests/$(RuntimeIdentifier).json</PayloadPath>
+    </_WpfD3D11Support>
+    <_WpfD3D11Support Include="$(WpfD3D11RuntimeRoot)tools/Payload.Common.ps1;$(WpfD3D11RuntimeRoot)tools/Test-WpfD3D11Runtime.ps1">
+      <PayloadPath>tools/%(Filename)%(Extension)</PayloadPath>
+    </_WpfD3D11Support>
+  </ItemGroup>
+
+  <Target Name="WpfD3D11ValidateInput" BeforeTargets="ResolveReferences" Condition="'$(_WpfD3D11RealBuild)' == 'true'">
+    <Error Code="WPFDR001" Condition="'$(RuntimeIdentifier)' != 'win-x64' and '$(RuntimeIdentifier)' != 'win-arm64'" Text="WpfD3D11Runtime 必须显式使用 win-x64 或 win-arm64 RID；无 RID、x86 和其它 RID 不受支持。" />
+    <Error Code="WPFDR002" Condition="'$(TargetFrameworkIdentifier)' != '.NETCoreApp' or '$(TargetFrameworkVersion)' != 'v10.0' or '$(UseWPF)' != 'true'" Text="WpfD3D11Runtime 仅支持 .NET 10 WPF，编译引用仍必须来自官方 targeting pack。" />
+    <Error Code="WPFDR003" Condition="'$(PublishTrimmed)' == 'true' or '$(PublishSingleFile)' == 'true' or '$(PublishAot)' == 'true' or '$(PublishReadyToRun)' == 'true' or '$(PublishReadyToRunComposite)' == 'true'" Text="WpfD3D11Runtime 本地预览不支持 trim/single-file/AOT/消费者二次 R2R。" />
+    <Error Code="WPFDR004" Condition="'$(GenerateDependencyFile)' == 'false'" Text="WpfD3D11Runtime 必须生成 deps.json 供门禁验证。" />
+    <Exec Command="&quot;$(WpfD3D11RuntimePowerShell)&quot; -NoProfile -File &quot;$(_WpfD3D11Verifier)&quot; -Mode Input -PackageRoot &quot;$(WpfD3D11RuntimeRoot).&quot; -RuntimeIdentifier &quot;$(RuntimeIdentifier)&quot;" />
+  </Target>
+
+  <!-- 诊断仅记录本包精确路径；不按包名子串删除别人的冲突项。 -->
+  <Target Name="WpfD3D11BeforeBuildConflicts" BeforeTargets="_HandlePackageFileConflicts" Condition="'$(_WpfD3D11RealBuild)' == 'true'">
+    <WriteLinesToFile File="$(IntermediateOutputPath)wpf-d3d11-before-build.txt" Lines="@(ReferenceCopyLocalPaths->'%(Identity)|%(NuGetPackageId)|%(AssetType)|%(PathInPackage)')" Overwrite="true" />
+  </Target>
+  <Target Name="WpfD3D11RestoreBuild" AfterTargets="ResolveReferences" BeforeTargets="GenerateBuildDependencyFile" DependsOnTargets="WpfD3D11ValidateInput" Condition="'$(_WpfD3D11RealBuild)' == 'true'">
+    <WriteLinesToFile File="$(IntermediateOutputPath)wpf-d3d11-build-conflicts.txt" Lines="@(_ConflictPackageFiles)" Overwrite="true" />
+    <ItemGroup>
+      <RuntimePackAsset Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+      <ReferenceCopyLocalPaths Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+      <ReferenceCopyLocalPaths Include="@(_WpfD3D11All)" />
+      <_ConflictPackageFiles Remove="@(_WpfD3D11All)" MatchOnMetadata="FullPath" MatchOnMetadataOptions="PathLike" />
+      <RuntimeCopyLocalItems Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+      <RuntimeCopyLocalItems Include="@(_WpfD3D11Runtime)" />
+      <NativeCopyLocalItems Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+      <NativeCopyLocalItems Include="@(_WpfD3D11Native)" />
+      <RuntimeTargetsCopyLocalItems Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)wpf-d3d11-build-restored.txt" Lines="@(_WpfD3D11All->'%(FullPath)|%(NuGetPackageId)|%(NuGetPackageVersion)|%(AssetType)|%(PathInPackage)');@(_ConflictPackageFiles)" Overwrite="true" />
+  </Target>
+  <Target Name="WpfD3D11RestorePublish" AfterTargets="_HandlePackageFileConflictsForPublish" BeforeTargets="GeneratePublishDependencyFile" DependsOnTargets="WpfD3D11ValidateInput" Condition="'$(_WpfD3D11RealBuild)' == 'true'">
+    <WriteLinesToFile File="$(IntermediateOutputPath)wpf-d3d11-publish-conflicts.txt" Lines="@(_PublishConflictPackageFiles)" Overwrite="true" />
+    <ItemGroup>
+      <RuntimePackAsset Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+      <_PublishConflictPackageFiles Remove="@(_WpfD3D11All)" MatchOnMetadata="FullPath" MatchOnMetadataOptions="PathLike" />
+      <_ResolvedCopyLocalPublishAssets Remove="@(_WpfD3D11All)" MatchOnMetadata="Filename;Extension" MatchOnMetadataOptions="CaseInsensitive" />
+      <_ResolvedCopyLocalPublishAssets Include="@(_WpfD3D11All)" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)wpf-d3d11-publish-restored.txt" Lines="@(_ResolvedCopyLocalPublishAssets->'%(FullPath)|%(NuGetPackageId)|%(AssetType)|%(PathInPackage)');@(_PublishConflictPackageFiles)" Overwrite="true" />
+  </Target>
+  <Target Name="WpfD3D11AssertBuild" AfterTargets="Build" Condition="'$(_WpfD3D11RealBuild)' == 'true'">
+    <Copy SourceFiles="@(_WpfD3D11Support)" DestinationFiles="@(_WpfD3D11Support->'$(TargetDir)licenses/WpfD3D11Runtime/%(PayloadPath)')" SkipUnchangedFiles="true" />
+    <Exec Command="&quot;$(WpfD3D11RuntimePowerShell)&quot; -NoProfile -File &quot;$(_WpfD3D11Verifier)&quot; -Mode Output -PackageRoot &quot;$(WpfD3D11RuntimeRoot).&quot; -RuntimeIdentifier &quot;$(RuntimeIdentifier)&quot; -OutputDirectory &quot;$(TargetDir).&quot; -DepsFile &quot;$(ProjectDepsFilePath)&quot; -SelfContained $(_WpfD3D11SelfContained) -ReportPath &quot;$(IntermediateOutputPath)wpf-d3d11-build-assertion.json&quot;" />
+  </Target>
+  <Target Name="WpfD3D11AssertPublish" AfterTargets="Publish" Condition="'$(_WpfD3D11RealBuild)' == 'true'">
+    <Copy SourceFiles="@(_WpfD3D11Support)" DestinationFiles="@(_WpfD3D11Support->'$(PublishDir)licenses/WpfD3D11Runtime/%(PayloadPath)')" SkipUnchangedFiles="true" />
+    <Exec Command="&quot;$(WpfD3D11RuntimePowerShell)&quot; -NoProfile -File &quot;$(_WpfD3D11Verifier)&quot; -Mode Output -PackageRoot &quot;$(WpfD3D11RuntimeRoot).&quot; -RuntimeIdentifier &quot;$(RuntimeIdentifier)&quot; -OutputDirectory &quot;$(PublishDir).&quot; -DepsFile &quot;$(PublishDir)$(AssemblyName).deps.json&quot; -SelfContained $(_WpfD3D11SelfContained) -ReportPath &quot;$(IntermediateOutputPath)wpf-d3d11-publish-assertion.json&quot;" />
+  </Target>
+</Project>

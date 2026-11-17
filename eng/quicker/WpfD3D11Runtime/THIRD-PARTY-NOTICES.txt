@@ -1,0 +1,11 @@
+P1 LOCAL VALIDATION ONLY — NOT FOR PUBLIC DISTRIBUTION
+
+微软原生二进制再分发许可待确认，未确认前不得公开推送。
+Microsoft native binary redistribution rights remain unconfirmed. DO NOT publish this package.
+
+LICENSE.txt contains the WPF source MIT license; it does not establish redistribution rights
+for every binary. PresentationNative_cor3.dll, vcruntime140_cor3.dll and the x64
+D3DCompiler_47_cor3.dll need individual upstream license/redist provenance review in P2.
+ARM64 OS D3DCompiler_47.dll is not distributed. The upstream notices are preserved in
+licenses/UPSTREAM-THIRD-PARTY-NOTICES.txt as evidence, not as a grant covering all binaries.
+No claim of Microsoft endorsement, authentic upstream signing, or public release approval is made.
