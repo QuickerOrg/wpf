@@ -15,6 +15,9 @@
 //
 
 #include "precomp.hpp"
+#if QUICKER_WPF_D3D11_FACADE
+#include "../common/s5i-interface-timing.h"
+#endif
 
 MtDefine(CD3DSurface, MILRender, "CD3DSurface");
 MtDefine(D3DResource_Surface, MILHwMetrics, "Approximate surface sizes");
@@ -100,6 +103,9 @@ CD3DSurface::CD3DSurface(
 //-------------------------------------------------------------------------
 CD3DSurface::~CD3DSurface()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    ResetLayeredReadback();
+#endif
     ReleaseInterfaceNoNULL(m_pD3DSurface);
 }
 
@@ -185,6 +191,7 @@ CD3DSurface::ReleaseD3DResources()
     }
 
 #if QUICKER_WPF_D3D11_FACADE
+    ResetLayeredReadback();
     m_facadeGDI.Reset(); m_facadeRTV.Reset(); m_facadeTexture.Reset();
 #endif
     // This context is protected so it is safe to release the D3D resource
@@ -576,5 +583,62 @@ HRESULT CD3DSurface::ReleaseFacadeDC()
     state->context->OMSetRenderTargets(1,state->target.GetAddressOf(),nullptr);
     // 执行层每次 Draw 重绑完整 GPU 状态，GetDC 后没有有效 GPU 状态缓存。
     return hr;
+}
+void CD3DSurface::ResetLayeredReadback()
+{
+    if(m_layeredDC && m_layeredOldBitmap)SelectObject(m_layeredDC,m_layeredOldBitmap);
+    if(m_layeredBitmap)DeleteObject(m_layeredBitmap);
+    if(m_layeredDC)DeleteDC(m_layeredDC);
+    m_layeredDC=nullptr;m_layeredBitmap=nullptr;m_layeredOldBitmap=nullptr;m_layeredBits=nullptr;
+    m_layeredValid=false;m_layeredStaging.Reset();
+}
+HRESULT CD3DSurface::GetLayeredDC(const RECT *dirty,HDC *dc,RECT *copied)
+{
+    *dc=nullptr;
+    auto state=Device().Facade();
+    if(m_facadeGeneration!=state->generation)return WGXERR_DISPLAYSTATEINVALID;
+    HRESULT hr=state->DeviceStatus();if(FAILED(hr))return hr;
+    if(!m_facadeTexture)return E_UNEXPECTED;
+    D3D11_TEXTURE2D_DESC desc={};m_facadeTexture->GetDesc(&desc);
+    if(desc.Format!=DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count!=1 || desc.Width>LONG_MAX || desc.Height>LONG_MAX)return E_INVALIDARG;
+    if(!m_layeredDC) {
+        // 用表面尺寸构建一次；resize/设备释放沿原资源生命周期清空，不跨代复用。
+        desc.MipLevels=1;desc.ArraySize=1;desc.BindFlags=0;desc.MiscFlags=0;
+        desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+        hr=state->device->CreateTexture2D(&desc,nullptr,&m_layeredStaging);if(FAILED(hr))return hr;
+        QkAccount(m_layeredStaging.Get(),"layered-staging",static_cast<ULONGLONG>(desc.Width)*desc.Height*4);
+        // 提供参考 DC，避免 NULL 参考时内存 DC 随创建线程退出而失效。
+        HDC display=::GetDC(nullptr);
+        if(!display){ResetLayeredReadback();return E_OUTOFMEMORY;}
+        m_layeredDC=CreateCompatibleDC(display);
+        ::ReleaseDC(nullptr,display);
+        if(!m_layeredDC){ResetLayeredReadback();return E_OUTOFMEMORY;}
+        BITMAPINFO bitmap={};bitmap.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+        bitmap.bmiHeader.biWidth=static_cast<LONG>(desc.Width);bitmap.bmiHeader.biHeight=-static_cast<LONG>(desc.Height);
+        bitmap.bmiHeader.biPlanes=1;bitmap.bmiHeader.biBitCount=32;bitmap.bmiHeader.biCompression=BI_RGB;
+        m_layeredBitmap=CreateDIBSection(m_layeredDC,&bitmap,DIB_RGB_COLORS,reinterpret_cast<void**>(&m_layeredBits),nullptr,0);
+        if(!m_layeredBitmap){ResetLayeredReadback();return E_OUTOFMEMORY;}
+        m_layeredOldBitmap=SelectObject(m_layeredDC,m_layeredBitmap);
+        if(!m_layeredOldBitmap || m_layeredOldBitmap==HGDI_ERROR){m_layeredOldBitmap=nullptr;ResetLayeredReadback();return E_OUTOFMEMORY;}
+        QK_OPT1_COUNT(Opt1DibCreate);
+    }
+    RECT full={0,0,static_cast<LONG>(desc.Width),static_cast<LONG>(desc.Height)},area=full;
+    if(m_layeredValid && dirty && !IntersectRect(&area,dirty,&full))SetRectEmpty(&area);
+    if(!IsRectEmpty(&area)) {
+        // 首帧完整初始化，之后只复制 WPF 已声明的源脏区；原 retained 目标不变。
+        D3D11_BOX box={static_cast<UINT>(area.left),static_cast<UINT>(area.top),0,static_cast<UINT>(area.right),static_cast<UINT>(area.bottom),1};
+        state->context->CopySubresourceRegion(m_layeredStaging.Get(),0,area.left,area.top,0,m_facadeTexture.Get(),0,&box);
+        D3D11_MAPPED_SUBRESOURCE map={};
+        hr=QK_INTERFACE_CALL(S5mMap,state->context->Map(m_layeredStaging.Get(),0,D3D11_MAP_READ,0,&map));
+        if(FAILED(hr)){m_layeredValid=false;return hr;}
+        const size_t stride=static_cast<size_t>(desc.Width)*4;
+        for(LONG y=area.top;y<area.bottom;++y)memcpy(m_layeredBits+static_cast<size_t>(y)*stride+static_cast<size_t>(area.left)*4,
+            static_cast<BYTE*>(map.pData)+static_cast<size_t>(y)*map.RowPitch+static_cast<size_t>(area.left)*4,static_cast<size_t>(area.right-area.left)*4);
+        state->context->Unmap(m_layeredStaging.Get(),0);
+        m_layeredValid=true;
+        QkFacadeCount(QkFacadeCounter::Readback);QkFacadeCount(QkFacadeCounter::ReadbackBytes,static_cast<ULONGLONG>(area.right-area.left)*(area.bottom-area.top)*4);
+    }
+    *copied=area;*dc=m_layeredDC;
+    return state->DeviceStatus();
 }
 #endif

@@ -28,7 +28,15 @@ struct QkS5mScope {
 
 void QkFacadeTiming(const char *name, LONGLONG start, HRESULT result, UINT detail = 0);
 // S5h 聚合计数默认关闭；启用时只做原子累加，由实验夹具在计时边界外读取，不逐帧写文件。
+#if QUICKER_WPF_OPT1_DIAGNOSTICS
+#define QK_OPT1_COUNTERS(X) X(Opt1Status,"opt1.device-status") X(Opt1Map,"opt1.map") X(Opt1DibCreate,"opt1.dib-create")
+#define QK_OPT1_COUNT(name) QkFacadeCount(QkFacadeCounter::name)
+#else
+#define QK_OPT1_COUNTERS(X)
+#define QK_OPT1_COUNT(name) ((void)0)
+#endif
 #define QK_FACADE_COUNTER_LIST(X) \
+    QK_OPT1_COUNTERS(X) \
     X(TrimArmed,"trim.armed") X(TrimFired,"trim.fired") X(TrimCancelledPresent,"trim.cancelled-present") \
     X(TrimCancelledVisible,"trim.cancelled-visible") X(TrimExecuted,"trim.executed") X(TrimSkippedRemoved,"trim.skipped-removed") \
     X(PresentAttempt,"present.attempt") X(PresentFlip,"present.flip") X(PresentUlw,"present.ulw") X(PresentGpuGdi,"present.gpu-gdi") \
@@ -181,6 +189,9 @@ class QkD3D11State
     HMONITOR m_monitor = nullptr;
     ComPtr<ID3D11Buffer> m_constants, m_uploadVB, m_uploadIB;
     UINT m_vbCapacity = 0, m_ibCapacity = 0, m_vbCursor = 0;
+    // OPT-1：UP 顶点和索引共享一个不重叠的动态环，一次 Map 同时上传。
+    ComPtr<ID3D11Buffer> m_uploadGeometry;
+    UINT m_geometryCapacity = 0, m_geometryCursor = 0;
     // 实际上下文绑定的弱身份；每次设备进入、显式解绑和 Copy 前后失效，不额外持有纹理。
     bool m_bindingsValid=false,m_iaValid=false;
     ID3D11InputLayout *m_appliedLayout=nullptr;
@@ -233,6 +244,8 @@ class QkD3D11State
     HRESULT InputLayout(QkFacadeShader *shader, ID3D11InputLayout **out);
 
     HRESULT Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes, UINT *offset=nullptr);
+    HRESULT UploadGeometry(const void *vertices, UINT bytes, const WORD *indices, UINT indexBytes, UINT *vertexOffset, UINT *indexOffset);
+    HRESULT DrawStatus() const;
 public:
     ComPtr<ID3D11Device> device;
     HRESULT WaitForVBlank();

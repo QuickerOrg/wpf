@@ -3894,7 +3894,10 @@ CD3DDeviceLevel1::PresentWithGDI(
 #if QUICKER_WPF_D3D11_FACADE
     *pfPresentProcessed=false; CD3DSurface *surface=nullptr;
     HRESULT hr=pD3DSwapChain->GetBackBuffer(0,&surface); if(FAILED(hr))return hr;
-    HDC dc=nullptr; hr=QK_INTERFACE_CALL(PresentGetDC,surface->GetDC(&dc));
+    static const bool readbackEnabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_OPT1_LAYERED",v,2)==1 && v[0]==L'1');}();
+    const bool readback=readbackEnabled && (GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED);
+    RECT copied={};HDC dc=nullptr;
+    hr=readback?QK_INTERFACE_CALL(PresentGetDC,surface->GetLayeredDC(prcSource,&dc,&copied)):QK_INTERFACE_CALL(PresentGetDC,surface->GetDC(&dc));
     if(SUCCEEDED(hr)) {
         if(pD3DSwapChain->m_facadeGdiPresent && !(GetWindowLongPtrW(pMILDC->GetHWND(),GWL_EXSTYLE)&WS_EX_LAYERED)) {
             // GDI 只搬运 GPU 已绘制的像素；遵守原窗口目标的源/目标矩形，不更改 HWND 样式。
@@ -3916,6 +3919,7 @@ CD3DDeviceLevel1::PresentWithGDI(
         UPDATELAYEREDWINDOWINFO info={}; info.cbSize=sizeof(info);
         info.pptDst=&pMILDC->GetPosition(); info.psize=&size; info.hdcSrc=dc; info.pptSrc=&src;
         info.crKey=pMILDC->GetColorKey(); info.pblend=&blend; info.dwFlags=pMILDC->GetULWFlags();
+        if(readback && !IsRectEmpty(&copied))info.prcDirty=&copied;
         // S5o 阶段 0：仅统计 WPF 请求的源脏区，不改变实际 ULW 参数。
         if(QkFacadeCountersEnabled()) {
             RECT full={0,0,size.cx,size.cy},dirty=full;
@@ -3928,7 +3932,9 @@ CD3DDeviceLevel1::PresentWithGDI(
         LONGLONG ulwStarted=QkFacadeClock();
         hr=QK_INTERFACE_CALL(PresentUlw,(UpdateLayeredWindowIndirect(pMILDC->GetHWND(),&info)?S_OK:HRESULT_FROM_WIN32(GetLastError())));
         QkFacadeTiming("UpdateLayeredWindowIndirect",ulwStarted,hr);
-        HRESULT release=QK_INTERFACE_CALL(PresentReleaseDC,surface->ReleaseDC(dc)); if(SUCCEEDED(hr))hr=release;
+        // ULW 失败时窗口的保留像素未更新；下次必须重新完整提交，不能只带新脏区。
+        if(readback && FAILED(hr))surface->m_layeredValid=false;
+        HRESULT release=readback?S_OK:QK_INTERFACE_CALL(PresentReleaseDC,surface->ReleaseDC(dc)); if(SUCCEEDED(hr))hr=release;
         *pfPresentProcessed=SUCCEEDED(hr);
         if(SUCCEEDED(hr)) { QkFacadeCount(QkFacadeCounter::PresentUlw); QkFacadeTrace("QK-FACADE Present ULW\n"); hr=m_facade->RecordPresent(); }
     }

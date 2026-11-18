@@ -53,6 +53,17 @@ static bool QkFacadeClearViewEnabled() {
 static bool QkFacadeVertexRingEnabled() {
     static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_VERTEX_RING",v,2)==1 && v[0]==L'1');}();return enabled;
 }
+static bool QkOpt1UploadEnabled() {
+    // Map 次数减少不等于 CPU 改善；ARM 重负载未验证稳定收益，合并上传仅显式实验启用。
+    static const bool enabled=[](){
+        WCHAR v[2]={};
+        if(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_OPT1_UPLOAD",v,2)==1 && v[0]==L'1')return false;
+        return GetEnvironmentVariableW(L"QUICKER_FACADE_ENABLE_OPT1_UPLOAD",v,2)==1 && v[0]==L'1' && QkFacadeVertexRingEnabled();
+    }();return enabled;
+}
+static bool QkOpt1DrawStatusEnabled() {
+    static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_OPT1_STATUS",v,2)==1 && v[0]==L'1');}();return enabled;
+}
 static bool QkFacadeUnusedSamplerSkipEnabled() {
     static const bool enabled=[](){WCHAR v[2]={};return !(GetEnvironmentVariableW(L"QUICKER_FACADE_DISABLE_UNUSED_SAMPLER_SKIP",v,2)==1 && v[0]==L'1');}();return enabled;
 }
@@ -166,6 +177,7 @@ void QkD3D11State::InvalidateTransientCache() {
     m_sparePresentQueries.clear(); m_presentQueries.clear();
 }
 HRESULT QkD3D11State::DeviceStatus() const {
+    QK_OPT1_COUNT(Opt1Status);
     QkFacadeSharedGuard guard;
     HRESULT hr = FAILED(removedReason) ? removedReason : device->GetDeviceRemovedReason();
     if (FAILED(hr) && SUCCEEDED(removedReason)) {
@@ -173,6 +185,12 @@ HRESULT QkD3D11State::DeviceStatus() const {
         char line[220];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE native removed hr=0x%08x generation=%llu tick=%llu\n",hr,generation,GetTickCount64());QkFacadeTrace(line);
     }
     return FAILED(hr) ? WGXERR_DISPLAYSTATEINVALID : S_OK;
+}
+HRESULT QkD3D11State::DrawStatus() const {
+    // BeginScene/EndScene、Present 前后及读回仍查询驱动。Draw 没有异步返回值；
+    // 在同一 scene 的提交边界传播移除，已知失败则立即返回，不隐藏 Map/Create 的 HRESULT。
+    if(!QkOpt1DrawStatusEnabled()) return DeviceStatus();
+    return FAILED(removedReason) ? WGXERR_DISPLAYSTATEINVALID : S_OK;
 }
 void QkD3D11State::ExperimentRemoval() {
     QkFacadeSharedGuard guard;
@@ -773,14 +791,14 @@ HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
     if(!vertices) { QK_INTERFACE_SCOPE(ZeroDraw); }
     { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); context->Draw(vertices, start); }
     QkFacadeTrace("QK-FACADE Draw original-hw\n");
-    return DeviceStatus();
+    return DrawStatus();
 }
 HRESULT QkD3D11State::DrawIndexed(UINT indices, UINT startIndex, INT baseVertex)
 {
     HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); context->DrawIndexed(indices, startIndex, baseVertex); }
     QkFacadeTrace("QK-FACADE DrawIndexed original-hw\n");
-    return DeviceStatus();
+    return DrawStatus();
 }
 HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT bind, const void *data, UINT bytes, UINT *offset)
 {
@@ -809,12 +827,53 @@ HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT 
     QkFacadeCount(position?QkFacadeCounter::UploadNoOverwrite:QkFacadeCounter::UploadDiscard);
     return S_OK;
 }
+HRESULT QkD3D11State::UploadGeometry(const void *vertices, UINT bytes, const WORD *indices, UINT indexBytes, UINT *vertexOffset, UINT *indexOffset)
+{
+    if(bytes>UINT_MAX-15 || indexBytes>UINT_MAX-((bytes+15)&~15U)) return E_INVALIDARG;
+    const UINT indexStart=(bytes+15)&~15U, total=indexStart+indexBytes;
+    if(total>m_geometryCapacity) {
+        D3D11_BUFFER_DESC desc={}; desc.ByteWidth=max(total,262144U);
+        desc.Usage=D3D11_USAGE_DYNAMIC;desc.BindFlags=D3D11_BIND_VERTEX_BUFFER|D3D11_BIND_INDEX_BUFFER;desc.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        ComPtr<ID3D11Buffer> buffer;HRESULT hr=device->CreateBuffer(&desc,nullptr,&buffer);if(FAILED(hr))return hr;
+        m_uploadGeometry=buffer;m_geometryCapacity=desc.ByteWidth;m_geometryCursor=0;
+        QkAccount(buffer.Get(),"upload-geometry-VB-IB",desc.ByteWidth);
+    }
+    UINT position=m_geometryCursor;
+    if(position>m_geometryCapacity || total>m_geometryCapacity-position)position=0;
+    D3D11_MAPPED_SUBRESOURCE map={};
+    HRESULT hr=QK_INTERFACE_CALL(S5mMap,context->Map(m_uploadGeometry.Get(),0,position?D3D11_MAP_WRITE_NO_OVERWRITE:D3D11_MAP_WRITE_DISCARD,0,&map));
+    if(FAILED(hr))return hr;
+    memcpy(static_cast<BYTE*>(map.pData)+position,vertices,bytes);
+    if(indexBytes)memcpy(static_cast<BYTE*>(map.pData)+position+indexStart,indices,indexBytes);
+    context->Unmap(m_uploadGeometry.Get(),0);
+    *vertexOffset=position;*indexOffset=position+indexStart;
+    m_geometryCursor=position+total;
+    if(m_geometryCursor<=UINT_MAX-15)m_geometryCursor=(m_geometryCursor+15)&~15U;
+    else m_geometryCursor=m_geometryCapacity;
+    QkFacadeCount(position?QkFacadeCounter::UploadNoOverwrite:QkFacadeCounter::UploadDiscard);
+    return S_OK;
+}
 HRESULT QkD3D11State::DrawUP(D3DPRIMITIVETYPE type, UINT primitives, const void *data, UINT stride)
 {
     if (!data || !stride || primitives > (UINT_MAX-2)/3) return E_INVALIDARG;
     UINT count = type == D3DPT_TRIANGLELIST ? primitives*3 : type == D3DPT_LINELIST ? primitives*2 : primitives+2;
     if (count > UINT_MAX/stride) return E_INVALIDARG;
     if (type == D3DPT_TRIANGLEFAN && count > 65536) return QkFacadeUnimpl("DrawUP.largeFan");
+    if(QkOpt1UploadEnabled()) {
+        std::vector<WORD> indices;
+        if(type==D3DPT_TRIANGLEFAN) {
+            indices.resize(primitives*3);
+            for(UINT i=0;i<primitives;++i){indices[i*3]=0;indices[i*3+1]=static_cast<WORD>(i+1);indices[i*3+2]=static_cast<WORD>(i+2);}
+        }
+        UINT vertexOffset=0,indexOffset=0;
+        HRESULT hr=UploadGeometry(data,count*stride,indices.data(),static_cast<UINT>(indices.size()*sizeof(WORD)),&vertexOffset,&indexOffset);if(FAILED(hr))return hr;
+        auto savedVB=m_boundVB;auto savedIB=m_boundIB;UINT savedStride=m_stride,savedOffset=m_offset;
+        m_boundVB=m_uploadGeometry;m_stride=stride;m_offset=vertexOffset;
+        if(type==D3DPT_TRIANGLEFAN){m_boundIB=m_uploadGeometry;hr=DrawIndexed(primitives*3,indexOffset/sizeof(WORD),0);}
+        else hr=Draw(type,count,0);
+        m_boundVB=savedVB;m_boundIB=savedIB;m_stride=savedStride;m_offset=savedOffset;
+        return hr;
+    }
     UINT vertexOffset=0;
     HRESULT hr = Upload(m_uploadVB, m_vbCapacity, D3D11_BIND_VERTEX_BUFFER, data, count*stride,&vertexOffset); if (FAILED(hr)) return hr;
     auto savedVB = m_boundVB; auto savedIB = m_boundIB;
@@ -835,6 +894,15 @@ HRESULT QkD3D11State::DrawUP(D3DPRIMITIVETYPE type, UINT primitives, const void 
 HRESULT QkD3D11State::DrawIndexedUP(UINT vertices, UINT primitives, const WORD *indices, const void *data, UINT stride)
 {
     if (!indices || !data || !stride || vertices > UINT_MAX/stride || primitives > UINT_MAX/(3*sizeof(WORD))) return E_INVALIDARG;
+    if(QkOpt1UploadEnabled()) {
+        UINT vertexOffset=0,indexOffset=0;
+        HRESULT hr=UploadGeometry(data,vertices*stride,indices,primitives*3*sizeof(WORD),&vertexOffset,&indexOffset);if(FAILED(hr))return hr;
+        auto savedVB=m_boundVB;auto savedIB=m_boundIB;UINT savedStride=m_stride,savedOffset=m_offset;
+        m_boundVB=m_uploadGeometry;m_boundIB=m_uploadGeometry;m_stride=stride;m_offset=vertexOffset;
+        hr=DrawIndexed(primitives*3,indexOffset/sizeof(WORD),0);
+        m_boundVB=savedVB;m_boundIB=savedIB;m_stride=savedStride;m_offset=savedOffset;
+        return hr;
+    }
     UINT vertexOffset=0;
     HRESULT hr = Upload(m_uploadVB, m_vbCapacity, D3D11_BIND_VERTEX_BUFFER, data, vertices*stride,&vertexOffset); if (FAILED(hr)) return hr;
     hr = Upload(m_uploadIB, m_ibCapacity, D3D11_BIND_INDEX_BUFFER, indices, primitives*3*sizeof(WORD)); if (FAILED(hr)) return hr;

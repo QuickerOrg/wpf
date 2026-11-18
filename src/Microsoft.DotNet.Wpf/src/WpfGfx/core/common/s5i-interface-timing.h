@@ -68,7 +68,12 @@ public:
     ~QkInterfaceScope() { Stop(); }
 };
 #define QK_INTERFACE_SCOPE(n) QkInterfaceScope qkInterfaceScope(QkInterfaceMetric::n)
-template<class F> auto QkInterfaceCall(QkInterfaceMetric metric,F call)->decltype(call()) { QkInterfaceScope scope(metric); return call(); }
+template<class F> auto QkInterfaceCall(QkInterfaceMetric metric,F call)->decltype(call()) {
+#if QUICKER_WPF_D3D11_FACADE && QUICKER_WPF_OPT1_DIAGNOSTICS
+    if(metric==QkInterfaceMetric::S5mMap) QK_OPT1_COUNT(Opt1Map);
+#endif
+    QkInterfaceScope scope(metric); return call();
+}
 #define QK_INTERFACE_CALL(n,expr) QkInterfaceCall(QkInterfaceMetric::n,[&](){ return (expr); })
 #else
 #define QK_INTERFACE_SCOPE(n) ((void)0)

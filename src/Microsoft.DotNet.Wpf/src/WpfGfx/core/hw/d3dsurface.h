@@ -26,6 +26,15 @@ public:
     ComPtr<ID3D11RenderTargetView> m_facadeRTV;
     ComPtr<IDXGISurface1> m_facadeGDI;
     ULONGLONG m_facadeGeneration = 0;
+    // OPT-1：只供分层呈现使用；硬件仍绘制到原目标，CPU 只搬运最终脏区。
+    ComPtr<ID3D11Texture2D> m_layeredStaging;
+    HDC m_layeredDC = nullptr;
+    HBITMAP m_layeredBitmap = nullptr;
+    HGDIOBJ m_layeredOldBitmap = nullptr;
+    BYTE *m_layeredBits = nullptr;
+    bool m_layeredValid = false;
+    void ResetLayeredReadback();
+    HRESULT GetLayeredDC(const RECT *dirty, HDC *dc, RECT *copied);
     static HRESULT CreateFacade(CD3DResourceManager *manager, QkD3D11State *state,
         UINT width, UINT height, D3DFORMAT format, CD3DSurface **out, ID3D11Texture2D *backBuffer=nullptr);
     HRESULT ReleaseFacadeDC();
