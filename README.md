@@ -1,22 +1,28 @@
-﻿# WPF D3D11 rendering backend (QuickerOrg fork)
+﻿# WPF on Direct3D 11 — feasibility study (QuickerOrg fork)
+
+**本仓库的主要目的：验证 WPF 能否不经过 D3D9、直接运行在 D3D11 上。** 也就是在保留 WPF 全部上层渲染算法和应用 API 的前提下，只替换底层图形设备，看画质、兼容性、内存和 CPU 能否达到可用水平。
+
+*Main purpose: to verify whether WPF can run directly on Direct3D 11 instead of Direct3D 9, keeping WPF's rendering algorithms and application APIs unchanged.*
 
 > 这是 [dotnet/wpf](https://github.com/dotnet/wpf) 的第三方 fork，由 [Quicker](https://getquicker.net) 团队维护，**不是微软官方产品，也未获微软背书**。fork 改动在 [`quicker/d3d11-facade`](https://github.com/QuickerOrg/wpf/tree/quicker/d3d11-facade) 分支，编译好的运行时以 NuGet 包 [WpfD3D11Runtime](https://www.nuget.org/packages/WpfD3D11Runtime) 发布。下方分隔线之后是上游原始 README。
 >
 > English summary below.
 
-## 为什么做
+## 背景：为什么要验证这件事
 
 WPF 的硬件渲染层（milcore / `wpfgfx`）至今仍建立在 Direct3D 9 之上。在 Windows on Arm 设备（如骁龙 X / Adreno X1-85）上，D3D9 没有原生驱动，实际路径是 **WPF → D3D9 → D3D9On12 转换层 → D3D12 → 驱动**。Quicker 在 ARM64 机器上的诊断发现：
 
 - 一个带动画、阴影的半透明弹出窗口（Quicker 的轮盘菜单）在 GPU 模式下进程内存可达约 460 MiB，切换到软件渲染只有约 150–200 MiB。多出的部分主要来自 D3D9On12 转换层和驱动内部的分配，应用层的缓存和资源释放都消除不了。
 - 关闭 GPU 加速（软件渲染）虽然省内存，但会牺牲动画流畅度，而且要逐个窗口取舍。
 
-## 目标
+## 要回答的问题
 
-- **应用代码一行不改**：WPF 控件、布局、绑定、输入、动画、XAML 全部照旧，替换的只是渲染运行时。
-- **进程内完全不加载 D3D9**：渲染、呈现、视频播放都走 D3D11 / DXGI，D3D9 和 D3D9On12 都不再出现。
-- **画质与原 WPF 一致**：几何栅格化、文字（灰度/ClearType）、画刷、模糊和阴影效果、BitmapCache 等算法照搬 WPF 原有实现，不重写。
-- **整体降低内存，CPU 不明显变差**，x64 与 ARM64 两种架构都支持。
+1. **能不能跑**：只替换设备层、不重写渲染器，WPF 能否在进程内完全不加载 D3D9 / D3D9On12 的情况下，覆盖真实应用的全部窗口（普通窗口、透明分层窗口、文字、效果、视频、设备丢失）？
+2. **画质是否一致**：几何栅格化、文字（灰度/ClearType）、画刷、模糊和阴影效果、BitmapCache 等沿用 WPF 原算法后，与原 D3D9 路径的像素差能否控制在很小范围内？
+3. **对应用是否透明**：应用代码一行不改，只换运行时，能否通过一条 NuGet 引用完成替换？
+4. **值不值得**：内存和 CPU 与原 D3D9 路径、与微软官方 WPF 相比如何，x64 和 ARM64 各是什么情况？
+
+结论（截至 2026-11）：前三个问题的答案都是**可行**，并已在 Quicker 的真实窗口中试用；第四个问题上内存收益明显，ARM64 上 CPU 仍略高于官方 WPF，详见下方“验证结果”。
 
 ## 怎么做的：设备门面（device facade）
 
@@ -63,11 +69,14 @@ WPF 的硬件渲染层（milcore / `wpfgfx`）至今仍建立在 Direct3D 9 之�
 
 **Why.** WPF's hardware renderer (milcore / `wpfgfx`) is still built on Direct3D 9. On Windows on Arm (for example Snapdragon X with Adreno X1-85) there is no native D3D9 driver, so WPF runs through **D3D9 → D3D9On12 → D3D12**. In [Quicker](https://getquicker.net), an animated, shadowed, semi-transparent popup reached about 460 MiB in GPU mode versus about 150–200 MiB with software rendering. Most of the difference came from allocations inside the translation layer and the driver, which application-level caching and releasing cannot remove.
 
-**Goal.** Drop-in replacement of the WPF runtime with no application changes:
+**Questions this study answers.**
 
-- no D3D9 or D3D9On12 loaded in the process;
-- the same image quality, by keeping WPF's own rasterization, text, brushes and effects;
-- lower memory without a meaningful CPU regression, on both x64 and ARM64.
+1. **Does it run?** Can WPF cover every window of a real application (normal and layered windows, text, effects, video, device loss) by replacing only the device layer, with no D3D9 or D3D9On12 loaded in the process?
+2. **Is image quality preserved?** Do the pixels stay very close to the D3D9 path when WPF's own rasterization, text, brushes and effects are kept?
+3. **Is it transparent to applications?** Can it be a drop-in replacement, through one NuGet reference and no code changes?
+4. **Is it worth it?** How do memory and CPU compare, on x64 and ARM64, with both the D3D9 path and the official Microsoft WPF?
+
+As of 2026-11, the answer to the first three questions is **yes**, and it is used in trial builds of Quicker. On the fourth, memory savings are substantial, while render CPU on ARM64 is still somewhat higher than the official WPF.
 
 **Approach.** A *device facade*. The whole `core/hw/` rendering stack is kept. Only the device layer beneath it is reimplemented on D3D11:
 
