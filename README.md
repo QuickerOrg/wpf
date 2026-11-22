@@ -50,6 +50,12 @@ WPF 的硬件渲染层（milcore / `wpfgfx`）至今仍建立在 Direct3D 9 之�
 
 ## 使用
 
+三步上手（[可运行 demo 与说明](samples/WpfD3D11Demo/README.md)）：
+
+1. 在 Windows x64 / ARM64 安装 .NET 10 SDK；框架依赖运行还需相应 Windows Desktop Runtime。
+2. 克隆 `quicker/d3d11-facade` 分支，进入 `samples/WpfD3D11Demo`。
+3. 运行 `dotnet run -r win-x64`（ARM64 用 `win-arm64`），查看窗口中的模块路径、版本和 D3D11/D3D9 状态。
+
 ```xml
 <PropertyGroup>
   <RuntimeIdentifier>win-x64</RuntimeIdentifier> <!-- 或 win-arm64 -->
@@ -105,6 +111,12 @@ All changes are behind `QUICKER_WPF_D3D11_FACADE`.
 - framework-dependent and self-contained publishing are supported;
 - not supported: x86, trimming, single-file, AOT, consumer-side R2R;
 - shared-framework servicing does not update the bundled files.
+
+Quick start ([runnable demo and instructions](samples/WpfD3D11Demo/README.md)):
+
+1. Install the .NET 10 SDK on Windows x64 / ARM64; framework-dependent execution also needs the matching Windows Desktop Runtime.
+2. Clone the `quicker/d3d11-facade` branch and enter `samples/WpfD3D11Demo`.
+3. Run `dotnet run -r win-x64` (`win-arm64` on ARM64) and inspect the loaded module paths, versions and D3D11/D3D9 state.
 
 ---
 
