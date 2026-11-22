@@ -9,6 +9,9 @@ param(
     [int]$PrivateReleaseSequence=1,
     [string]$MSBuild='C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe',
     [string]$Crossgen2='F:/WpfP0/r2r-tools-10.0.14/package/tools/crossgen2.exe',
+    # Offline NuGet package cache used for restore (online feeds are disabled below).
+    # Must be an absolute path that already contains every package the build restores.
+    [string]$NuGetPackagesDirectory='F:/WpfP0/packages',
     [string]$SignTool,
     [string]$CertificateThumbprint,
     [string]$TimestampUrl,
@@ -21,9 +24,10 @@ $ErrorActionPreference='Stop'
 . "$PSScriptRoot/tools/Payload.Common.ps1"
 $wpf=[IO.Path]::GetFullPath("$PSScriptRoot/../../..")
 $slice=[IO.Path]::GetFullPath("$wpf/../..")
-foreach($p in @($OutputRoot,$QuickerRepository,$ReferenceDirectory)) {
+foreach($p in @($OutputRoot,$QuickerRepository,$ReferenceDirectory,$NuGetPackagesDirectory)) {
     Assert-Wpf ([IO.Path]::IsPathFullyQualified($p)) "Absolute path required: $p"
 }
+Assert-Wpf (Test-Path -LiteralPath $NuGetPackagesDirectory -PathType Container) "NuGet package cache not found: $NuGetPackagesDirectory"
 if($ResumeFailedBuild) {
     $prior=Read-WpfJson "$OutputRoot/build-receipt.json"
     Assert-Wpf ($prior.sourceSliceCommit -eq (& git -C $slice rev-parse HEAD).Trim() -and $prior.architecture -eq $Architecture) 'Resume source/architecture mismatch'
@@ -34,7 +38,7 @@ New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 # and FilterItem1ByItem2. A tree-local, NEW obj root is required (P2 exception).
 $sourceObj="$wpf/artifacts-p2-$([IO.Path]::GetFileName($OutputRoot.TrimEnd('/','\')))/obj/"
 Assert-Wpf ($ResumeFailedBuild -or -not (Test-Path -LiteralPath $sourceObj)) 'P2 source obj directory already exists; use a new OutputRoot.'
-$env:NUGET_PACKAGES='F:/WpfP0/packages'
+$env:NUGET_PACKAGES=$NuGetPackagesDirectory
 $env:APPDATA="$OutputRoot/appdata"
 $env:CL='/utf-8'; $env:LC_ALL='C'; $env:LANG='C'
 New-Item -ItemType Directory -Path "$OutputRoot/empty-feed","$OutputRoot/appdata" -Force | Out-Null

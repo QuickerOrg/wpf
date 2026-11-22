@@ -112,8 +112,8 @@ $env:CL = '/utf-8'
 参数与限制：
 
 - 必填 `-Architecture x64|ARM64`、`-OutputRoot`、`-QuickerRepository`、`-ReferenceDirectory`；后三者必须为绝对路径。`OutputRoot` 必须全新且不存在，每架构单独设置。
-- 显式传 `-ForkRepository`、`-MSBuild`、`-Crossgen2`，不要依赖脚本内的构建机路径。`PrivateReleaseSequence` 默认 **1**，重建本版应明确传 **3**；包版本由 `eng/Versions.props` 的基线加序号生成。
-- 脚本还**硬编码** `$env:NUGET_PACKAGES='F:/WpfP0/packages'`，把 `RestoreSources` 指向新建空 feed 并关闭在线 feeds；没有缓存路径参数。调用前设置 `NUGET_PACKAGES` 不能覆盖它。按原脚本复现必须预备这一位置及所需包；其他路径的 producer 适配未验证，显式传参不能消除此硬编码。
+- 显式传 `-ForkRepository`、`-MSBuild`、`-Crossgen2`、`-NuGetPackagesDirectory`，不要依赖脚本内的构建机默认路径。`PrivateReleaseSequence` 默认 **1**，重建本版应明确传 **3**；包版本由 `eng/Versions.props` 的基线加序号生成。
+- NuGet 缓存由 `-NuGetPackagesDirectory` 指定（绝对路径，必须已存在），脚本据此设置 `NUGET_PACKAGES`；调用前设置的环境变量 `NUGET_PACKAGES` 会被它覆盖。脚本把 `RestoreSources` 指向新建空 feed 并关闭在线 feeds，所以这是**离线还原**：该目录必须事先包含构建所需的全部包（可先用联网的普通构建预热同一目录）。默认值是维护者构建机路径，外部构建必须显式传参。
 - C++/CLI 中间项目需继承源码树 targets：obj 在 WPF 根下独立的 `artifacts-p2-<OutputRoot末段>/obj/`，bin/log 在 `OutputRoot`。不同构建使用不同末段名称，不能仅更换父目录后重用旧 obj。
 - 内部已有 `-restore`、`CL=/utf-8`、Release 门面开关、私有版本适配及 net472 PresentationBuildTasks 先行 restore，一次 MSBuild 会话构建完整运行时图。脚本关闭三类 API compat 检查，不能把构建成功说成已通过 API compat。
 - `-BuildOnly` 在完整 33 文件 IL 投影及版本校验后停止；不加它必须提供有效 `-EquivalenceReport`。`-ResumeFailedBuild` 只用于同一源码提交/架构的失败恢复。
@@ -132,6 +132,7 @@ pwsh -NoProfile -File "$producer/Build-WpfD3D11Runtime.ps1" `
   -Architecture x64 -OutputRoot C:/build/wpf-x64-new `
   -QuickerRepository $quicker -ReferenceDirectory C:/inputs/references-x64 `
   -ForkRepository $fork -MSBuild $msbuild -Crossgen2 $crossgen2 `
+  -NuGetPackagesDirectory C:/build/nuget-packages `
   -PrivateReleaseSequence 3 -BuildOnly
 ```
 
