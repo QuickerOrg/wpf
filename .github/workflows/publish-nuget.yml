@@ -1,0 +1,124 @@
+name: Publish WpfD3D11Runtime to nuget.org
+
+# The package is built and Authenticode-signed offline (cloud signing certificate
+# is only available on the maintainer machine). This workflow only verifies the
+# exact prebuilt package attached to a GitHub Release and pushes it with
+# NuGet Trusted Publishing. No API key is stored in the repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub Release tag that carries the .nupkg asset (e.g. wpfd3d11runtime-10.0.14-d3d11.3)
+        required: true
+        type: string
+      package_version:
+        description: Exact package version (e.g. 10.0.14-d3d11.3)
+        required: true
+        type: string
+      package_sha256:
+        description: Expected SHA256 of the .nupkg (uppercase or lowercase hex)
+        required: true
+        type: string
+
+concurrency:
+  group: publish-nuget
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_ID: WpfD3D11Runtime
+
+jobs:
+  publish:
+    name: Verify and publish
+    runs-on: windows-latest
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $name = "$env:PACKAGE_ID.$env:PACKAGE_VERSION.nupkg"
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $name --dir artifacts
+          $found = @(Get-ChildItem artifacts -Filter '*.nupkg')
+          if ($found.Count -ne 1 -or $found[0].Name -ne $name) {
+            throw "Expected exactly one asset named $name, found: $($found.Name -join ', ')"
+          }
+
+      - name: Verify hash and identity
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+        run: |
+          $pkg = Get-Item "artifacts/$env:PACKAGE_ID.$env:PACKAGE_VERSION.nupkg"
+          $hash = (Get-FileHash $pkg.FullName -Algorithm SHA256).Hash
+          if ($hash -ne $env:PACKAGE_SHA256.Trim().ToUpperInvariant()) {
+            throw "SHA256 mismatch: expected $env:PACKAGE_SHA256, actual $hash"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+          try {
+            $entry = $zip.Entries | Where-Object { $_.FullName -eq "$env:PACKAGE_ID.nuspec" }
+            if (-not $entry) { throw 'nuspec not found at package root' }
+            $reader = [System.IO.StreamReader]::new($entry.Open())
+            [xml]$nuspec = $reader.ReadToEnd(); $reader.Dispose()
+            $id = $nuspec.package.metadata.id; $ver = $nuspec.package.metadata.version
+            if ($id -ne $env:PACKAGE_ID -or $ver -ne $env:PACKAGE_VERSION) {
+              throw "nuspec identity $id $ver does not match $env:PACKAGE_ID $env:PACKAGE_VERSION"
+            }
+            if ($nuspec.OuterXml -match 'DO NOT PUBLISH') { throw 'package still marked DO NOT PUBLISH' }
+          } finally { $zip.Dispose() }
+          "Verified $($pkg.Name) $hash"
+
+      - name: Ensure version is not on nuget.org yet
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $url = "https://api.nuget.org/v3-flatcontainer/$($env:PACKAGE_ID.ToLowerInvariant())/index.json"
+          try { $versions = (Invoke-RestMethod $url).versions } catch { $versions = @() }
+          if ($versions -contains $env:PACKAGE_VERSION.ToLowerInvariant()) {
+            throw "$env:PACKAGE_ID $env:PACKAGE_VERSION already exists on nuget.org"
+          }
+
+      - name: NuGet login
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: cuiliang
+
+      - name: Publish package
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $pkg = Get-Item "artifacts/$env:PACKAGE_ID.$env:PACKAGE_VERSION.nupkg"
+          dotnet nuget push $pkg.FullName --no-symbols `
+            --source 'https://api.nuget.org/v3/index.json' `
+            --api-key $env:NUGET_API_KEY
+
+      - name: Wait for V3 index
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $url = "https://api.nuget.org/v3-flatcontainer/$($env:PACKAGE_ID.ToLowerInvariant())/index.json"
+          for ($i = 0; $i -lt 40; $i++) {
+            try { $versions = (Invoke-RestMethod $url).versions } catch { $versions = @() }
+            if ($versions -contains $env:PACKAGE_VERSION.ToLowerInvariant()) { "Indexed after $($i * 30)s"; exit 0 }
+            Start-Sleep -Seconds 30
+          }
+          Write-Warning 'Push accepted but not yet visible in the V3 flat container after 20 minutes; check later.'
