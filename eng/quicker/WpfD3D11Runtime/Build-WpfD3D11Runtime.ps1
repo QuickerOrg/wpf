@@ -46,9 +46,12 @@ $head=(& git -C $slice rev-parse HEAD).Trim()
 $tree=(& git -C $slice rev-parse HEAD:src/wpf).Trim()
 $forkCommit=(& git -C $ForkRepository rev-parse HEAD).Trim()
 $forkTree=(& git -C $ForkRepository rev-parse 'HEAD^{tree}').Trim()
-$sliceFiles=@(& git -C $slice ls-tree -r HEAD:src/wpf | Where-Object { $_ -notmatch '\teng/quicker/' })
-$forkFiles=@(& git -C $ForkRepository ls-tree -r HEAD | Where-Object { $_ -notmatch '\teng/quicker/' })
-Assert-Wpf (($sliceFiles -join "`n") -ceq ($forkFiles -join "`n")) 'Fork/slice trees differ outside packaging; do not claim fork provenance.'
+# Paths that never feed the runtime build: packaging scripts, the public sample and the root README.
+# Everything else must match exactly between the build slice and the fork.
+$treeCompareExclude='\t(eng/quicker/|samples/|README\.md$)'
+$sliceFiles=@(& git -C $slice ls-tree -r HEAD:src/wpf | Where-Object { $_ -notmatch $treeCompareExclude })
+$forkFiles=@(& git -C $ForkRepository ls-tree -r HEAD | Where-Object { $_ -notmatch $treeCompareExclude })
+Assert-Wpf (($sliceFiles -join "`n") -ceq ($forkFiles -join "`n")) 'Fork/slice trees differ outside packaging, samples and root README; do not claim fork provenance.'
 $dirty=@(& git -C $slice status --porcelain --untracked-files=no | Where-Object { $_.Substring(3) -notlike 'src/wpf/eng/quicker/WpfD3D11Runtime/*' })
 Assert-Wpf ($dirty.Count -eq 0) 'Source dirty outside permitted packaging directory.'
 [xml]$versions=Get-Content "$wpf/eng/Versions.props"

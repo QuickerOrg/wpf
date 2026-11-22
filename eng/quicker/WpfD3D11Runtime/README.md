@@ -105,7 +105,7 @@ $env:CL = '/utf-8'
 
 ### 使用现有 producer 构建运行时
 
-[Build-WpfD3D11Runtime.ps1](Build-WpfD3D11Runtime.ps1) **目前依赖 VMR 布局，不能直接在独立 fork 中运行**：从脚本位置上溯到 WPF 根，再上溯两级认作 VMR 根，读取 `HEAD:src/wpf` 与 `src/source-manifest.json`。它还比较 VMR 的 WPF 树与 `-ForkRepository` 的树（仅排除 `eng/quicker/`）；文档和 samples 的新增也需同步到构建切片快照，否则会被树比对拒绝。
+[Build-WpfD3D11Runtime.ps1](Build-WpfD3D11Runtime.ps1) **目前依赖 VMR 布局，不能直接在独立 fork 中运行**：从脚本位置上溯到 WPF 根，再上溯两级认作 VMR 根，读取 `HEAD:src/wpf` 与 `src/source-manifest.json`。它还比较 VMR 的 WPF 树与 `-ForkRepository` 的树，排除不参与运行时构建的 `eng/quicker/`、`samples/` 和根 `README.md`；其余文件必须逐一相同，否则拒绝构建。
 
 要复用这条有历史构建记录的路线，需另备 [dotnet/dotnet VMR](https://github.com/dotnet/dotnet) 工作区，将与 fork 一致的 WPF 源码快照放到 `src/wpf` 并提交、记录真实来源，保留 VMR 构建基础设施。只把文件放进名叫 `src/wpf` 的空目录不够。**从公开基线在外部机器完整重建环境未验证**；本仓库未提供一键导入 VMR、准备全部依赖或生成等价性报告的公共入口。
 
