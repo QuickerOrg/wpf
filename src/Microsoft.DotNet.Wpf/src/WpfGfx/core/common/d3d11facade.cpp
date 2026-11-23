@@ -577,8 +577,34 @@ HRESULT QkD3D11State::BindTarget(ID3D11RenderTargetView *rtv, UINT w, UINT h, bo
     context->OMSetRenderTargets(1, target.GetAddressOf(), nullptr);
     return DeviceStatus();
 }
+// EMOJI6：仅实验子进程启用；记录 Present 入口的渲染线程累计 CPU/周期和 QPC。
+// 关闭时只走一次静态开关分支，不改呈现行为，也不增加模块导入。
+static void QkEmoji6PresentSample()
+{
+    static WCHAR path[32768] = {};
+    static const bool enabled = []() {
+        const DWORD n = GetEnvironmentVariableW(L"QUICKER_WPF_COLOR_GLYPHS_FRAME_LOG", path, ARRAYSIZE(path));
+        return n > 0 && n < ARRAYSIZE(path);
+    }();
+    if (!enabled) return;
+    FILETIME creation, exit, kernel, user;
+    ULONG64 cycles = 0;
+    if (!GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user) ||
+        !QueryThreadCycleTime(GetCurrentThread(), &cycles)) return;
+    const ULONGLONG cpu = (static_cast<ULONGLONG>(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+        (static_cast<ULONGLONG>(user.dwHighDateTime) << 32) + user.dwLowDateTime;
+    char line[240];
+    StringCchPrintfA(line, ARRAYSIZE(line), "{\"qpc\":%lld,\"cpu100ns\":%llu,\"cycles\":%llu,\"tid\":%lu}\n",
+        QkFacadeClock(), cpu, cycles, GetCurrentThreadId());
+    const HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written; WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr); CloseHandle(file);
+}
+
 HRESULT QkD3D11State::RecordPresent()
 {
+    QkEmoji6PresentSample();
     QK_INTERFACE_SCOPE(PresentRecord);
     if(!m_loggedFirstPresent) {
         char line[180];StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE first-present generation=%llu tick=%llu thread=%lu\n",generation,GetTickCount64(),GetCurrentThreadId());

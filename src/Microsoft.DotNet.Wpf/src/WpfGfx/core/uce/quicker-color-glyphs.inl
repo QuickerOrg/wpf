@@ -38,6 +38,7 @@ public:
         Ptr<IWGXBitmap> bitmap;
         D2D1_COLOR_F foreground;
         bool usesForeground;
+        bool prewarmed = false, color = false;
         float left, top;
         UINT width, height;
     };
@@ -50,7 +51,7 @@ public:
         bool hit;
         LONGLONG lookupTicks;
         float scaleX = 1, scaleY = 1;
-        bool interpolated = false;
+        bool interpolated = false, color = false;
     };
 
     // 仅保存平凡静态状态；无静态 COM 析构，也不从 DllMain 清理。
@@ -66,8 +67,9 @@ public:
     class Guard
     {
     public:
-        Guard() { AcquireSRWLockExclusive(&Process().lock); }
-        ~Guard() { ReleaseSRWLockExclusive(&Process().lock); }
+        explicit Guard(bool acquire = true) : held(acquire) { if (held) AcquireSRWLockExclusive(&Process().lock); }
+        ~Guard() { if (held) ReleaseSRWLockExclusive(&Process().lock); }
+        bool held;
         Guard(const Guard &) = delete;
         Guard &operator=(const Guard &) = delete;
     };
@@ -82,28 +84,63 @@ public:
     static void Release(QkColorGlyphCache *cache)
     {
         if (!cache) return;
-        Guard guard;
-        auto &state = Process();
-        Assert(cache == state.cache && state.contexts > 0);
-        if (--state.contexts == 0)
+        bool last = false;
         {
-            delete state.cache; // 正常 CDrawingContext 析构路径，持锁排除下一代创建。
-            state.cache = nullptr;
+            Guard guard;
+            auto &state = Process();
+            Assert(cache == state.cache && state.contexts > 0);
+            last = --state.contexts == 0;
+            cache->Trace();
+            if (last)
+            {
+                state.cache = nullptr; // 下一代可以创建；旧后台仅能发布到仍是当前代的缓存。
+                InterlockedExchange(&cache->m_stop, 1);
+                if (cache->m_wake) SetEvent(cache->m_wake);
+            }
         }
-        else cache->Trace();
+        if (last)
+        {
+            const ULONGLONG start = GetTickCount64();
+            const DWORD result = cache->m_threads.empty() ? WAIT_OBJECT_0 :
+                WaitForMultipleObjects(static_cast<DWORD>(cache->m_threads.size()), cache->m_threads.data(), TRUE, 2000);
+            char line[180];
+            StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI6-STOP waitMs=%llu result=%lu deferred=%u\n",
+                GetTickCount64() - start, result, result == WAIT_OBJECT_0 ? 0u : 1u);
+            Log(line);
+            // 超时不能强杀系统光栅化或释放仍被使用的对象。工作引用+模块引用负责延迟安全收尾。
+            cache->DropReference();
+        }
     }
 
-    QkColorGlyphCache()
+    explicit QkColorGlyphCache(bool worker = false) : m_worker(worker)
     {
+        m_threads.reserve(4);
         m_keyBuffer.reserve(128);
         m_origins.reserve(4096);
+    }
+    static float XPhases()
+    {
+        static const float phases = []() {
+            WCHAR value[3] = {};
+            return GetEnvironmentVariableW(L"QUICKER_WPF_COLOR_GLYPHS_XPHASE", value, 3) == 1 && value[0] == L'4' ? 4.0f : 1.0f;
+        }();
+        return phases;
+    }
+    static bool PrewarmEnabled()
+    {
+        static const bool enabled = []() {
+            WCHAR value[3] = {};
+            return !(GetEnvironmentVariableW(L"QUICKER_WPF_COLOR_GLYPHS_PREWARM", value, 3) == 1 && value[0] == L'0');
+        }();
+        return enabled;
     }
 
     HRESULT PrepareGlyphs(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
         float sx, float sy, float deviceX, float deviceY, const D2D1_COLOR_F &foreground,
         std::vector<Prepared> &prepared, UINT64 sourceId, bool allowAnimation = true)
     {
-        Guard guard;
+        if (!m_worker && PrewarmEnabled()) InterlockedExchange64(&m_lastForeground, static_cast<LONG64>(GetTickCount64()));
+        Guard guard(!m_worker);
         prepared.reserve(run.glyphCount);
         const bool initializing = !m_initialized;
         const LONGLONG initStart = StepClock();
@@ -126,7 +163,8 @@ public:
             const float x = deviceX + m_origins[i].x * sx, y = deviceY + m_origins[i].y * sy;
             if (!std::isfinite(x) || !std::isfinite(y) || fabsf(x) > 1e7f || fabsf(y) > 1e7f)
             { Fallback("glyph-position"); return S_FALSE; }
-            const float snappedX = floorf(x * 4 + 0.5f) / 4;
+            const float snappedX = floorf(x * XPhases() + 0.5f) / XPhases();
+            if (!m_worker) m_maxXShift = max(m_maxXShift, fabsf(snappedX - floorf(x * 4 + 0.5f) / 4));
             const float baseX = floorf(snappedX), baseY = floorf(y + 0.5f);
             glyph.glyphIndices = run.glyphIndices + i;
             Entry *entry = nullptr;
@@ -140,6 +178,7 @@ public:
             if (preparedBytes > 32 * 1024 * 1024) { Fallback("prepared-size-limit"); return S_FALSE; }
             Prepared tile = { entry ? entry->bitmap : Ptr<IWGXBitmap>(), baseX, baseY, dimensions.left, dimensions.top,
                 dimensions.width, dimensions.height, m_lastHit, lookupTicks };
+            tile.color = dimensions.color;
             if (m_lastAnimated)
             {
                 tile.scaleX = sx / entry->sx; tile.scaleY = sy / entry->sy;
@@ -157,9 +196,9 @@ public:
     {
         const LONGLONG ticks = QkFacadeClock() - start + tile.lookupTicks;
         Guard guard;
-        Process().drawTicks += ticks;
-        if (tile.hit) { Process().hitTicks += ticks; ++Process().hitDraws; }
-        if ((++Process().draws & 255) == 0) Trace();
+        Stats().drawTicks += ticks;
+        if (tile.hit) { Stats().hitTicks += ticks; ++Stats().hitDraws; }
+        if ((++Stats().draws & 255) == 0) Trace();
     }
 
     Ptr<IDWriteFontFace> ColorFace(CGlyphRunResource *resource)
@@ -189,12 +228,17 @@ public:
         return enabled;
     }
 
-    ~QkColorGlyphCache() { Trace(); }
+    ~QkColorGlyphCache()
+    {
+        for (HANDLE thread : m_threads) CloseHandle(thread);
+        if (m_wake) CloseHandle(m_wake);
+    }
 
     void Fallback(const char *reason, HRESULT hr = S_OK)
     {
-        ++Process().fallbacks;
-        if (Process().fallbacks <= 8)
+        if (m_worker) return;
+        ++Stats().fallbacks;
+        if (Stats().fallbacks <= 8)
         {
             char line[200];
             StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI1 fallback=%s hr=0x%08lx\n", reason, hr);
@@ -244,12 +288,9 @@ private:
         UINT formats, foregroundLayers;
         UINT x = 0, y = 0;
     };
-    HRESULT Get(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
-                float sx, float sy, float phaseX, float phaseY,
-                const D2D1_COLOR_F &foreground, Entry **result, std::vector<Work> &pending,
-                std::unordered_multimap<UINT64, size_t> &pendingIndex, size_t slot, UINT64 sourceId, bool allowAnimation)
+    UINT64 MakeKey(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
+        float sx, float sy, float phaseX, float phaseY, size_t &placementOffset)
     {
-        m_lastHit = false; m_lastAnimated = false;
         auto &key = m_keyBuffer;
         key.clear();
         Append(key, &run.glyphCount, sizeof(run.glyphCount));
@@ -258,7 +299,7 @@ private:
         Append(key, &run.bidiLevel, sizeof(run.bidiLevel));
         Append(key, &run.isSideways, sizeof(run.isSideways));
         Append(key, &mode, sizeof(mode));
-        const size_t placementOffset = key.size();
+        placementOffset = key.size();
         const float placement[] = { sx, sy, phaseX, phaseY };
         Append(key, placement, sizeof(placement));
         Append(key, run.glyphIndices, run.glyphCount * sizeof(UINT16));
@@ -272,14 +313,30 @@ private:
         // FNV-1a 流式预计算 64 位哈希；相同哈希才比较完整键，碰撞不影响正确性。
         UINT64 hash = 14695981039346656037ull;
         for (BYTE value : key) { hash ^= value; hash *= 1099511628211ull; }
+        return hash;
+    }
+    HRESULT Get(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
+                float sx, float sy, float phaseX, float phaseY,
+                const D2D1_COLOR_F &foreground, Entry **result, std::vector<Work> &pending,
+                std::unordered_multimap<UINT64, size_t> &pendingIndex, size_t slot, UINT64 sourceId, bool allowAnimation)
+    {
+        m_lastHit = false; m_lastAnimated = false;
+        size_t placementOffset = 0;
+        const UINT64 hash = MakeKey(run, mode, sx, sy, phaseX, phaseY, placementOffset);
+        auto &key = m_keyBuffer;
         const auto range = m_index.equal_range(hash);
         for (auto candidate = range.first; candidate != range.second; ++candidate)
         {
             auto it = candidate->second;
             if (it->key == key && (!it->usesForeground || memcmp(&it->foreground, &foreground, sizeof(foreground)) == 0))
             {
+                if (it->prewarmed)
+                {
+                    --m_warmEntries; m_warmBytes -= static_cast<size_t>(it->width) * it->height * 4;
+                    it->prewarmed = false;
+                }
                 m_entries.splice(m_entries.begin(), m_entries, it);
-                ++Process().hits; m_lastHit = true;
+                ++Stats().hits; m_lastHit = true;
                 *result = &m_entries.front();
                 return S_OK;
             }
@@ -288,13 +345,13 @@ private:
         // 动画身份省略设备缩放/像素相位；位图仍保留原始精确键。资源序号仅隔离动画检测，
         // 不限制不同文本/窗口之间共享位图，也不在共享缓存中持有 WPF 资源指针。
         auto identity = key;
-        memset(identity.data() + placementOffset, 0, sizeof(placement));
+        memset(identity.data() + placementOffset, 0, 4 * sizeof(float));
         if (allowAnimation)
         {
             Entry *closest = AnimationBitmap(identity, sourceId, sx, sy, foreground);
             if (closest)
             {
-                ++Process().hits; m_lastHit = true; m_lastAnimated = true;
+                ++Stats().hits; m_lastHit = true; m_lastAnimated = true;
                 *result = closest;
                 return S_OK;
             }
@@ -306,7 +363,7 @@ private:
             if (item.entry.key == key && (!item.entry.usesForeground || memcmp(&item.entry.foreground, &foreground, sizeof(foreground)) == 0))
             {
                 item.slots.push_back(slot); m_pendingItem = it->second;
-                ++Process().hits; m_lastHit = true; *result = nullptr;
+                ++Stats().hits; m_lastHit = true; *result = nullptr;
                 return S_OK;
             }
         }
@@ -441,6 +498,7 @@ private:
         item.entry.identity = std::move(identity); item.entry.sx = sx; item.entry.sy = sy;
         item.entry.phaseX = phaseX; item.entry.phaseY = phaseY;
         item.entry.foreground = foreground; item.entry.usesForeground = usesForeground;
+        item.entry.color = (formatsSeen & ~(DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE | DWRITE_GLYPH_IMAGE_FORMATS_CFF)) != 0;
         item.entry.left = left; item.entry.top = top; item.entry.width = w; item.entry.height = h;
         item.layers = std::move(drawLayers); item.commands = std::move(commands); item.brush = std::move(brush);
         item.glyph = run.glyphIndices[0]; item.em = run.fontEmSize;
@@ -450,7 +508,7 @@ private:
         m_pendingItem = pending.size();
         pending.push_back(std::move(item));
         pendingIndex.emplace(hash, m_pendingItem);
-        Process().rasterTicks += QkFacadeClock() - start;
+        Stats().rasterTicks += QkFacadeClock() - start;
         *result = nullptr;
         return S_OK;
     }
@@ -515,6 +573,11 @@ private:
             if (score < best) { best = score; closest = it; }
         }
         if (closest == m_entries.end()) return nullptr;
+        if (closest->prewarmed)
+        {
+            --m_warmEntries; m_warmBytes -= static_cast<size_t>(closest->width) * closest->height * 4;
+            closest->prewarmed = false;
+        }
         m_entries.splice(m_entries.begin(), m_entries, closest);
         if (TimingEnabled())
         {
@@ -574,10 +637,10 @@ private:
             const HRESULT endHr = m_dc4->EndDraw();
             const LONGLONG endTicks = StepClock() - endStart;
             m_dc4->SetTransform(D2D1::Matrix3x2F::Identity());
-            Process().rasterTicks += QkFacadeClock() - rasterStart;
+            Stats().rasterTicks += QkFacadeClock() - rasterStart;
             if (SUCCEEDED(hr)) hr = endHr;
             if (FAILED(hr)) { Fallback("batch-rasterize", hr); return S_FALSE; }
-            if (TimingEnabled())
+            if (!m_worker && TimingEnabled())
             {
                 LARGE_INTEGER frequency; QueryPerformanceFrequency(&frequency);
                 char line[200];
@@ -622,26 +685,227 @@ private:
                     const auto victims = m_index.equal_range(victim->hash);
                     for (auto it = victims.first; it != victims.second; ++it)
                         if (it->second == victim) { m_index.erase(it); break; }
-                    m_entries.pop_back(); ++Process().evictions;
+                    if (victim->prewarmed) { --m_warmEntries; m_warmBytes -= static_cast<size_t>(victim->width) * victim->height * 4; }
+                    m_entries.pop_back(); ++Stats().evictions;
                 }
                 m_entries.push_front(std::move(item.entry));
                 try { m_index.emplace(m_entries.front().hash, m_entries.begin()); }
                 catch (...) { m_entries.pop_front(); throw; }
-                m_bytes += bytes; ++Process().misses;
+                m_bytes += bytes; ++Stats().misses;
                 const auto &entry = m_entries.front();
                 for (size_t slot : item.slots) prepared[slot].bitmap = entry.bitmap;
                 item.steps.Add(Insert, insertStart);
-                Process().rasterTicks += QkFacadeClock() - publishStart;
+                Stats().rasterTicks += QkFacadeClock() - publishStart;
                 DWRITE_GLYPH_RUN run = {}; run.glyphIndices = &item.glyph; run.fontFace = entry.face.Get(); run.fontEmSize = item.em;
-                TraceSteps(run, item.sx, item.sy, item.phaseX, item.formats, w, h, item.steps);
+                if (!m_worker) TraceSteps(run, item.sx, item.sy, item.phaseX, item.formats, w, h, item.steps);
                 char line[240];
                 StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI1 raster glyphs=1 formats=0x%x foregroundLayers=%u foregroundKey=%u size=%ux%u scale=%.3f,%.3f phase=%.5f,%.5f\n",
                     item.formats, item.foregroundLayers, entry.usesForeground ? 1u : 0u, w, h, item.sx, item.sy, item.phaseX, item.phaseY);
-                Log(line);
+                if (!m_worker) Log(line);
             }
             first = last;
         }
         return S_OK;
+    }
+
+public:
+    void RegisterTarget(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
+        float sx, float sy, const D2D1_COLOR_F &foreground)
+    {
+        if (!PrewarmEnabled()) return;
+        Guard guard;
+        for (const auto &target : m_targets)
+            if (target.face.Get() == run.fontFace && target.em == run.fontEmSize && target.sx == sx && target.sy == sy &&
+                target.mode == mode && target.bidi == run.bidiLevel && target.sideways == run.isSideways &&
+                memcmp(&target.foreground, &foreground, sizeof(foreground)) == 0) return;
+        if (m_targets.size() >= 4) return;
+        // 前景色保守区分目标；发布时仍由实际 usesForeground 决定是否忽略颜色键。
+        WarmTarget target; target.face = run.fontFace; target.em = run.fontEmSize;
+        target.sx = sx; target.sy = sy; target.mode = mode; target.bidi = run.bidiLevel;
+        target.sideways = run.isSideways; target.foreground = foreground;
+        m_targets.push_back(std::move(target));
+        if (!m_running)
+        {
+            if (!m_wake) m_wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!m_wake || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                reinterpret_cast<LPCWSTR>(&WorkerEntry), &m_workerModule)) return;
+            InterlockedIncrement(&m_lifetime);
+            const HANDLE thread = CreateThread(nullptr, 0, WorkerEntry, this, 0, nullptr);
+            if (!thread)
+            {
+                InterlockedDecrement(&m_lifetime); FreeLibrary(m_workerModule); m_workerModule = nullptr;
+                return;
+            }
+            m_threads.push_back(thread); // 构造时已预留4个句柄；最多4个尺寸目标，不会在启动后分配。
+            m_running = true;
+        }
+        SetEvent(m_wake);
+    }
+private:
+    struct WarmTarget
+    {
+        Ptr<IDWriteFontFace> face;
+        float em = 0, sx = 1, sy = 1;
+        DWRITE_MEASURING_MODE mode = DWRITE_MEASURING_MODE_NATURAL;
+        UINT32 bidi = 0;
+        BOOL sideways = FALSE;
+        D2D1_COLOR_F foreground = {};
+        size_t next = 0;
+    };
+    static const UINT32 *WarmCodepoints(size_t &count)
+    {
+        // 100 个单码点，不拆分肤色/ZWJ，不为未映射的码点猜测后备字体。
+        static const UINT32 codes[] = {
+            0x1F600,0x1F603,0x1F604,0x1F601,0x1F606,0x1F605,0x1F602,0x1F923,0x1F60A,0x1F60D,
+            0x1F970,0x1F618,0x1F60E,0x1F914,0x1F62D,0x1F622,0x1F621,0x1F973,0x1F634,0x1F929,
+            0x1F44D,0x1F44B,0x1F64F,0x1F4AA,0x1F389,0x1F382,0x1F381,0x1F525,0x1F4AF,0x2764,
+            0x1F496,0x1F308,0x2600,0x1F680,0x1F44F,0x1F44C,0x1F64C,0x1F91D,0x1F4A1,0x1F4A5,
+            0x1F60B,0x1F61C,0x1F61D,0x1F92A,0x1F607,0x1F917,0x1F92D,0x1F92B,0x1F644,0x1F60F,
+            0x1F612,0x1F614,0x1F61E,0x1F61F,0x1F615,0x1F641,0x1F633,0x1F631,0x1F630,0x1F613,
+            0x1F625,0x1F62C,0x1F910,0x1F92E,0x1F922,0x1F637,0x1F912,0x1F915,0x1F608,0x1F47B,
+            0x1F480,0x1F916,0x1F4A9,0x1F63A,0x1F638,0x1F639,0x1F63B,0x1F63C,0x1F63D,0x1F640,
+            0x1F436,0x1F431,0x1F98A,0x1F43C,0x1F981,0x1F984,0x1F338,0x1F339,0x1F33B,0x1F340,
+            0x1F31F,0x2B50,0x1F319,0x1F30D,0x1F354,0x1F355,0x1F370,0x2615,0x1F37B,0x1F3C6
+        };
+        count = ARRAYSIZE(codes); return codes;
+    }
+    bool Stopping() { return InterlockedCompareExchange(&m_stop, 0, 0) != 0; }
+    bool Idle()
+    {
+        return GetTickCount64() - static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_lastForeground, 0, 0)) >= 300;
+    }
+    bool Contains(const Entry &entry)
+    {
+        const auto range = m_index.equal_range(entry.hash);
+        for (auto it = range.first; it != range.second; ++it)
+            if (it->second->key == entry.key && (!it->second->usesForeground ||
+                memcmp(&it->second->foreground, &entry.foreground, sizeof(entry.foreground)) == 0)) return true;
+        return false;
+    }
+    // 后台永不排队等待前台持有的 SRW；也没有任何 D2D 工作在共享锁内。
+    class TryGuard
+    {
+    public:
+        bool held;
+        TryGuard() : held(TryAcquireSRWLockExclusive(&Process().lock) != FALSE) {}
+        ~TryGuard() { if (held) ReleaseSRWLockExclusive(&Process().lock); }
+    };
+    static DWORD WINAPI WorkerEntry(void *parameter)
+    {
+        auto *owner = static_cast<QkColorGlyphCache *>(parameter);
+        const HMODULE module = owner->m_workerModule;
+        SetThreadDescription(GetCurrentThread(), L"QkEmojiPrewarm");
+        const BOOL background = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+        if (!background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        char line[200];
+        StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI6-THREAD tid=%lu background=%u priority=%d com=0x%08lx\n",
+            GetCurrentThreadId(), background ? 1u : 0u, GetThreadPriority(GetCurrentThread()), com);
+        Log(line);
+        if (SUCCEEDED(com))
+        {
+            try { owner->PrewarmLoop(); }
+            catch (...) { Log("QK-EMOJI6-ERROR worker-exception\n"); }
+            CoUninitialize(); // 私有生成器和全部 D2D/WIC 对象已在工作线程正常释放。
+        }
+        Log("QK-EMOJI6-THREAD exited\n");
+        if (background) SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+        owner->DropReference();
+        FreeLibraryAndExitThread(module, 0); // 固定模块直到最后一条线程指令，DLL 卸载无需等待或释放 COM。
+    }
+    void PrewarmLoop()
+    {
+        QkColorGlyphCache generator(true); // 自己的 single-thread factory/context/WIC、reader 和计时。
+        UINT64 batches = 0, generated = 0, skipped = 0, pauses = 0;
+        LONGLONG totalTicks = 0;
+        bool paused = false, exhausted = false;
+        size_t count = 0; const UINT32 *codes = WarmCodepoints(count);
+        while (!Stopping())
+        {
+            if (!Idle())
+            {
+                if (!paused) { ++pauses; paused = true; }
+                WaitForSingleObject(m_wake, 50); continue;
+            }
+            paused = false;
+            UINT attempted = 0, made = 0, omitted = 0;
+            const LONGLONG start = QkFacadeClock();
+            for (; attempted < 8 && !Stopping() && Idle(); ++attempted)
+            {
+                WarmTarget target; UINT32 code = 0;
+                {
+                    TryGuard guard;
+                    if (!guard.held || Process().cache != this || Stopping()) break;
+                    auto it = m_targets.begin();
+                    for (; it != m_targets.end() && it->next >= count; ++it) {}
+                    if (it == m_targets.end())
+                    {
+                        // 原子交接：后续登记在同一锁下看到 false，创建新的工作代。
+                        // 当前代之后只析构自己的生成器；旧句柄保留，最终释放时一并有界等待。
+                        m_running = false; exhausted = true; break;
+                    }
+                    target = *it; code = codes[it->next++];
+                }
+                UINT16 glyph = 0;
+                if (FAILED(target.face->GetGlyphIndices(&code, 1, &glyph)) || !glyph) { ++omitted; continue; }
+                const FLOAT advance = 0;
+                DWRITE_GLYPH_RUN run = {};
+                run.fontFace = target.face.Get(); run.fontEmSize = target.em; run.glyphCount = 1;
+                run.glyphIndices = &glyph; run.glyphAdvances = &advance; run.bidiLevel = target.bidi; run.isSideways = target.sideways;
+                size_t offset = 0;
+                Entry lookup = {};
+                lookup.hash = generator.MakeKey(run, target.mode, target.sx, target.sy, 0, 0, offset);
+                lookup.key = generator.m_keyBuffer; lookup.foreground = target.foreground;
+                {
+                    TryGuard guard;
+                    if (!guard.held) { ++omitted; continue; }
+                    if (Process().cache != this || Stopping()) break;
+                    if (Contains(lookup) || m_entries.size() >= 256 || m_warmEntries >= 64 ||
+                        m_bytes >= 32 * 1024 * 1024 || m_warmBytes >= 8 * 1024 * 1024) { ++omitted; continue; }
+                }
+                std::vector<Prepared> prepared;
+                if (generator.PrepareGlyphs(run, target.mode, target.sx, target.sy, 0, 0, target.foreground, prepared, 0, false) != S_OK ||
+                    generator.m_entries.empty()) { ++omitted; continue; }
+                auto &entry = generator.m_entries.front();
+                const size_t bytes = static_cast<size_t>(entry.width) * entry.height * 4;
+                {
+                    TryGuard guard;
+                    if (guard.held && Process().cache == this && !Stopping() && !Contains(entry) &&
+                        m_entries.size() < 256 && m_warmEntries < 64 && m_bytes + bytes <= 32 * 1024 * 1024 &&
+                        m_warmBytes + bytes <= 8 * 1024 * 1024)
+                    {
+                        entry.prewarmed = true;
+                        m_entries.push_back(std::move(entry));
+                        auto inserted = --m_entries.end();
+                        try { m_index.emplace(inserted->hash, inserted); }
+                        catch (...) { m_entries.pop_back(); throw; }
+                        m_bytes += bytes; m_warmBytes += bytes; ++m_warmEntries; ++made;
+                    }
+                    else ++omitted;
+                }
+                generator.m_index.clear(); generator.m_entries.clear(); generator.m_bytes = 0;
+            }
+            if (attempted || made || omitted)
+            {
+                ++batches; generated += made; skipped += omitted;
+                const LONGLONG ticks = QkFacadeClock() - start; totalTicks += ticks;
+                LARGE_INTEGER frequency; QueryPerformanceFrequency(&frequency);
+                char line[240];
+                StringCchPrintfA(line, ARRAYSIZE(line),
+                    "QK-EMOJI6-BATCH batches=%llu generated=%llu skipped=%llu pauses=%llu count=%u batchMs=%.6f elapsedMs=%.6f\n",
+                    batches, generated, skipped, pauses, attempted, ticks * 1000.0 / frequency.QuadPart,
+                    totalTicks * 1000.0 / frequency.QuadPart);
+                Log(line);
+            }
+            if (exhausted) break;
+            WaitForSingleObject(m_wake, 25);
+        }
+        LARGE_INTEGER frequency; QueryPerformanceFrequency(&frequency);
+        char line[240];
+        StringCchPrintfA(line, ARRAYSIZE(line),
+            "QK-EMOJI6-SUMMARY batches=%llu generated=%llu skipped=%llu pauses=%llu elapsedMs=%.6f\n",
+            batches, generated, skipped, pauses, totalTicks * 1000.0 / frequency.QuadPart);
+        Log(line);
     }
 
 private:
@@ -783,14 +1047,30 @@ private:
         char line[400];
         StringCchPrintfA(line, ARRAYSIZE(line),
             "QK-EMOJI1 cache draws=%llu hits=%llu misses=%llu fallback=%llu evictions=%llu entries=%zu bytes=%zu drawMs=%.6f rasterMs=%.6f paint=%u hitDraws=%llu hitMs=%.6f contexts=%u scope=process\n",
-            Process().draws, Process().hits, Process().misses, Process().fallbacks, Process().evictions, m_entries.size(), m_bytes,
-            Process().drawTicks * 1000.0 / frequency.QuadPart, Process().rasterTicks * 1000.0 / frequency.QuadPart,
-            m_dc7 ? static_cast<UINT>(m_dc7->GetPaintFeatureLevel()) : 0, Process().hitDraws,
-            Process().hitTicks * 1000.0 / frequency.QuadPart, Process().contexts);
+            Stats().draws, Stats().hits, Stats().misses, Stats().fallbacks, Stats().evictions, m_entries.size(), m_bytes,
+            Stats().drawTicks * 1000.0 / frequency.QuadPart, Stats().rasterTicks * 1000.0 / frequency.QuadPart,
+            m_dc7 ? static_cast<UINT>(m_dc7->GetPaintFeatureLevel()) : 0, Stats().hitDraws,
+            Stats().hitTicks * 1000.0 / frequency.QuadPart, Process().contexts);
+        Log(line);
+        StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI6-CAPACITY warmEntries=%zu warmBytes=%zu maxXShift=%.6f phases=%.0f\n",
+            m_warmEntries, m_warmBytes, m_maxXShift, XPhases());
         Log(line);
     }
     struct Module { HMODULE handle = nullptr; ~Module() { if (handle) FreeLibrary(handle); } };
     Module m_d2d, m_dw;
+    bool m_worker = false;
+    ProcessState m_workerStats;
+    ProcessState &Stats() { return m_worker ? m_workerStats : Process(); }
+    volatile LONG m_lifetime = 1, m_stop = 0;
+    volatile LONG64 m_lastForeground = 0;
+    HANDLE m_wake = nullptr;
+    std::vector<HANDLE> m_threads;
+    bool m_running = false; // 仅共享SRW锁下访问；已完成队列不常驻轮询线程。
+    HMODULE m_workerModule = nullptr;
+    std::vector<WarmTarget> m_targets;
+    size_t m_warmEntries = 0, m_warmBytes = 0;
+    float m_maxXShift = 0;
+    void DropReference() { if (InterlockedDecrement(&m_lifetime) == 0) delete this; }
     LONGLONG m_pendingInit = 0, m_pendingFace = 0;
     size_t m_pendingItem = 0;
     bool m_lastAnimated = false;
@@ -892,8 +1172,16 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
         if (scope.active)
         {
             scope.active = false;
-            return Pop();
+            const HRESULT hr = Pop();
+            if (FAILED(hr)) return hr;
         }
+        // 只用已经成功绘制的真实彩色图登记；单色后备/动画临时插值不占用尺寸组合名额。
+        for (const auto &tile : tiles)
+            if (tile.color && !tile.interpolated)
+            {
+                m_pColorGlyphCache->RegisterTarget(run, mode, sx, sy, foreground);
+                break;
+            }
         return S_OK;
     }
     catch (const std::bad_alloc &)
