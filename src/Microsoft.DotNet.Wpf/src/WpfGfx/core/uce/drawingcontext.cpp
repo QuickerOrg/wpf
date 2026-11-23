@@ -396,7 +396,7 @@ CDrawingContext::~CDrawingContext()
     ReleaseInterface(m_pComposition);
     ReleaseInterface(m_pScratchBitmapBrush);
 #if QUICKER_WPF_D3D11_FACADE
-    delete m_pColorGlyphCache;
+    QkColorGlyphCache::Release(m_pColorGlyphCache);
 #endif
 
     delete m_pPreComputeContext;

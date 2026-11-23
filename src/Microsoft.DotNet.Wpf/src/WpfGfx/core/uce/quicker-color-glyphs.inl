@@ -1,4 +1,4 @@
-// EMOJI2：只在私有门面中编译；由 drawingcontext.cpp 的宏保护入口包含。
+// EMOJI3：只在私有门面中编译；由 drawingcontext.cpp 的宏保护入口包含。
 #if QUICKER_WPF_D3D11_FACADE
 #include <dwrite_3.h>
 #include <d2d1_3.h>
@@ -32,18 +32,58 @@ public:
         LONGLONG lookupTicks;
     };
 
+    // 仅保存平凡静态状态；无静态 COM 析构，也不从 DllMain 清理。
+    struct ProcessState
+    {
+        SRWLOCK lock = SRWLOCK_INIT;
+        QkColorGlyphCache *cache = nullptr;
+        UINT contexts = 0;
+        UINT64 hits = 0, misses = 0, fallbacks = 0, evictions = 0, draws = 0, hitDraws = 0;
+        LONGLONG drawTicks = 0, rasterTicks = 0, hitTicks = 0;
+    };
+    static ProcessState &Process() { static ProcessState state; return state; }
+    class Guard
+    {
+    public:
+        Guard() { AcquireSRWLockExclusive(&Process().lock); }
+        ~Guard() { ReleaseSRWLockExclusive(&Process().lock); }
+        Guard(const Guard &) = delete;
+        Guard &operator=(const Guard &) = delete;
+    };
+    static QkColorGlyphCache *Acquire()
+    {
+        Guard guard;
+        auto &state = Process();
+        if (!state.cache) state.cache = new QkColorGlyphCache();
+        ++state.contexts;
+        return state.cache;
+    }
+    static void Release(QkColorGlyphCache *cache)
+    {
+        if (!cache) return;
+        Guard guard;
+        auto &state = Process();
+        Assert(cache == state.cache && state.contexts > 0);
+        if (--state.contexts == 0)
+        {
+            delete state.cache; // 正常 CDrawingContext 析构路径，持锁排除下一代创建。
+            state.cache = nullptr;
+        }
+        else cache->Trace();
+    }
+
     QkColorGlyphCache()
     {
-        m_keyBuffer.reserve(4096 * 14 + 128);
+        m_keyBuffer.reserve(128);
         m_origins.reserve(4096);
-        m_prepared.reserve(4096);
     }
 
     HRESULT PrepareGlyphs(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
         float sx, float sy, float deviceX, float deviceY, const D2D1_COLOR_F &foreground,
-        const std::vector<Prepared> **result)
+        std::vector<Prepared> &prepared)
     {
-        m_prepared.clear();
+        Guard guard;
+        prepared.reserve(run.glyphCount);
         HRESULT hr = Initialize();
         if (FAILED(hr)) { Fallback("initialize", hr); return S_FALSE; }
         m_origins.resize(run.glyphCount);
@@ -73,26 +113,27 @@ public:
             if (preparedBytes > 32 * 1024 * 1024) { Fallback("prepared-size-limit"); return S_FALSE; }
             Prepared tile = { entry->bitmap, baseX, baseY, entry->left, entry->top,
                 entry->width, entry->height, m_lastHit, lookupTicks };
-            m_prepared.push_back(std::move(tile));
+            prepared.push_back(std::move(tile));
         }
         // 全部成功才绘制；持 bitmap 引用，避免长 run 中 LRU 逐出使前面字形悬空。
-        *result = &m_prepared;
         return S_OK;
     }
 
-    void ReleasePrepared() { m_prepared.clear(); }
-
     void PreparedDrawTime(LONGLONG start, const Prepared &tile)
     {
-        m_lastHit = tile.hit;
-        DrawTime(start - tile.lookupTicks);
+        const LONGLONG ticks = QkFacadeClock() - start + tile.lookupTicks;
+        Guard guard;
+        Process().drawTicks += ticks;
+        if (tile.hit) { Process().hitTicks += ticks; ++Process().hitDraws; }
+        if ((++Process().draws & 255) == 0) Trace();
     }
 
-    IDWriteFontFace *ColorFace(CGlyphRunResource *resource)
+    Ptr<IDWriteFontFace> ColorFace(CGlyphRunResource *resource)
     {
+        Guard guard;
         IDWriteFont *font = resource->GetColorGlyphFont();
         auto found = m_fonts.find(font);
-        if (found != m_fonts.end()) return found->second.color ? found->second.face.Get() : nullptr;
+        if (found != m_fonts.end()) return found->second.color ? found->second.face : Ptr<IDWriteFontFace>();
         Font entry; entry.font = font;
         if (FAILED(resource->GetColorGlyphFace(&entry.face))) return nullptr;
         Ptr<IDWriteFontFace2> color;
@@ -100,7 +141,7 @@ public:
         // 字体键和字体面均持引用；清空时没有悬空地址身份可被误命中。
         if (m_fonts.size() >= 64) m_fonts.clear();
         auto inserted = m_fonts.emplace(font, std::move(entry));
-        return inserted.first->second.color ? inserted.first->second.face.Get() : nullptr;
+        return inserted.first->second.color ? inserted.first->second.face : Ptr<IDWriteFontFace>();
     }
 
     static bool Enabled()
@@ -116,8 +157,8 @@ public:
 
     void Fallback(const char *reason, HRESULT hr = S_OK)
     {
-        ++m_fallbacks;
-        if (m_fallbacks <= 8)
+        ++Process().fallbacks;
+        if (Process().fallbacks <= 8)
         {
             char line[200];
             StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI1 fallback=%s hr=0x%08lx\n", reason, hr);
@@ -125,14 +166,7 @@ public:
         }
     }
 
-    void DrawTime(LONGLONG start)
-    {
-        const LONGLONG ticks = QkFacadeClock() - start;
-        m_drawTicks += ticks;
-        if (m_lastHit) { m_hitTicks += ticks; ++m_hitDraws; }
-        if ((++m_draws & 255) == 0) Trace();
-    }
-
+private:
     HRESULT Get(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
                 float sx, float sy, float phaseX, float phaseY,
                 const D2D1_COLOR_F &foreground, Entry **result)
@@ -166,7 +200,7 @@ public:
             if (it->key == key && (!it->usesForeground || memcmp(&it->foreground, &foreground, sizeof(foreground)) == 0))
             {
                 m_entries.splice(m_entries.begin(), m_entries, it);
-                ++m_hits; m_lastHit = true;
+                ++Process().hits; m_lastHit = true;
                 *result = &m_entries.front();
                 return S_OK;
             }
@@ -309,13 +343,13 @@ public:
             const auto victims = m_index.equal_range(victim->hash);
             for (auto it = victims.first; it != victims.second; ++it)
                 if (it->second == victim) { m_index.erase(it); break; }
-            m_entries.pop_back(); ++m_evictions;
+            m_entries.pop_back(); ++Process().evictions;
         }
         m_entries.push_front(std::move(entry));
         try { m_index.emplace(hash, m_entries.begin()); }
         catch (...) { m_entries.pop_front(); throw; }
-        m_bytes += bytes; ++m_misses;
-        m_rasterTicks += QkFacadeClock() - start;
+        m_bytes += bytes; ++Process().misses;
+        Process().rasterTicks += QkFacadeClock() - start;
         char line[240];
         StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI1 raster glyphs=%u formats=0x%x foregroundLayers=%u foregroundKey=%u size=%ux%u scale=%.3f,%.3f phase=%.5f,%.5f\n",
             run.glyphCount, formatsSeen, foregroundLayers, usesForeground ? 1u : 0u, w, h, sx, sy, phaseX, phaseY);
@@ -393,18 +427,16 @@ private:
         LARGE_INTEGER frequency; QueryPerformanceFrequency(&frequency);
         char line[400];
         StringCchPrintfA(line, ARRAYSIZE(line),
-            "QK-EMOJI1 cache draws=%llu hits=%llu misses=%llu fallback=%llu evictions=%llu entries=%zu bytes=%zu drawMs=%.6f rasterMs=%.6f paint=%u hitDraws=%llu hitMs=%.6f\n",
-            m_draws, m_hits, m_misses, m_fallbacks, m_evictions, m_entries.size(), m_bytes,
-            m_drawTicks * 1000.0 / frequency.QuadPart, m_rasterTicks * 1000.0 / frequency.QuadPart,
-            m_dc7 ? static_cast<UINT>(m_dc7->GetPaintFeatureLevel()) : 0, m_hitDraws,
-            m_hitTicks * 1000.0 / frequency.QuadPart);
+            "QK-EMOJI1 cache draws=%llu hits=%llu misses=%llu fallback=%llu evictions=%llu entries=%zu bytes=%zu drawMs=%.6f rasterMs=%.6f paint=%u hitDraws=%llu hitMs=%.6f contexts=%u scope=process\n",
+            Process().draws, Process().hits, Process().misses, Process().fallbacks, Process().evictions, m_entries.size(), m_bytes,
+            Process().drawTicks * 1000.0 / frequency.QuadPart, Process().rasterTicks * 1000.0 / frequency.QuadPart,
+            m_dc7 ? static_cast<UINT>(m_dc7->GetPaintFeatureLevel()) : 0, Process().hitDraws,
+            Process().hitTicks * 1000.0 / frequency.QuadPart, Process().contexts);
         Log(line);
     }
     struct Module { HMODULE handle = nullptr; ~Module() { if (handle) FreeLibrary(handle); } };
     Module m_d2d, m_dw;
     bool m_lastHit = false;
-    UINT64 m_hitDraws = 0;
-    LONGLONG m_hitTicks = 0;
     bool m_initialized = false;
     HRESULT m_initResult = E_FAIL;
     Ptr<ID2D1Factory> m_factory;
@@ -419,12 +451,9 @@ private:
     std::unordered_map<IDWriteFont *, Font> m_fonts;
     std::vector<BYTE> m_keyBuffer;
     std::vector<D2D1_POINT_2F> m_origins;
-    std::vector<Prepared> m_prepared;
     std::list<Entry> m_entries;
     std::unordered_multimap<UINT64, std::list<Entry>::iterator> m_index;
     size_t m_bytes = 0;
-    UINT64 m_hits = 0, m_misses = 0, m_fallbacks = 0, m_evictions = 0, m_draws = 0;
-    LONGLONG m_drawTicks = 0, m_rasterTicks = 0;
 };
 
 HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunResource *resource, bool *drawn)
@@ -437,10 +466,10 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
     // 创建和字体映射可能分配；统一置于 bad_alloc 后备保护内。
     try
     {
-        if (!m_pColorGlyphCache) m_pColorGlyphCache = new QkColorGlyphCache();
-        IDWriteFontFace *face = m_pColorGlyphCache->ColorFace(resource);
+        if (!m_pColorGlyphCache) m_pColorGlyphCache = QkColorGlyphCache::Acquire();
+        auto face = m_pColorGlyphCache->ColorFace(resource);
         if (!face) return S_OK;
-        resource->GetColorGlyphRun(face, &run, &mode);
+        resource->GetColorGlyphRun(face.Get(), &run, &mode);
         if (!run.glyphCount || run.glyphCount > 4096) return S_OK;
         ApplyRenderState();
         const auto &world = m_contextState.WorldToDevice;
@@ -457,9 +486,9 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
         const auto origin = resource->GetOrigin();
         const float deviceX = origin.X * sx + world.GetDx(), deviceY = origin.Y * sy + world.GetDy();
         if (!std::isfinite(deviceX) || !std::isfinite(deviceY) || fabsf(deviceX) > 1e7f || fabsf(deviceY) > 1e7f) return S_OK;
-        const std::vector<QkColorGlyphCache::Prepared> *tiles = nullptr;
-        if (m_pColorGlyphCache->PrepareGlyphs(run, mode, sx, sy, deviceX, deviceY, foreground, &tiles) != S_OK)
-        { m_pColorGlyphCache->ReleasePrepared(); return S_OK; }
+        std::vector<QkColorGlyphCache::Prepared> tiles; // 局部引用独立于共享 LRU，锁外绘制安全。
+        if (m_pColorGlyphCache->PrepareGlyphs(run, mode, sx, sy, deviceX, deviceY, foreground, tiles) != S_OK)
+        { return S_OK; }
         // 画刷透明度作用于整个 run；重叠字形先 src-over 合成，再统一乘透明度。
         // 世界矩阵的平移已复制，PushOpacity 的临时目标不会改变局部定位计算。
         struct OpacityScope
@@ -471,11 +500,11 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
         if (opacity < 1.0f)
         {
             const HRESULT hr = PushOpacity(opacity, nullptr);
-            if (FAILED(hr)) { m_pColorGlyphCache->ReleasePrepared(); return hr; }
+            if (FAILED(hr)) { return hr; }
             scope.active = true;
         }
         *drawn = true; // 开始任何 DrawBitmap 后绝不再叠加整条单色 run。
-        for (const auto &tile : *tiles)
+        for (const auto &tile : tiles)
         {
             const LONGLONG start = QkFacadeClock();
             if (!tile.bitmap) { m_pColorGlyphCache->PreparedDrawTime(start, tile); continue; }
@@ -489,9 +518,8 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
             const HRESULT hr = DrawBitmap(tile.bitmap.Get(), &source, &rect, 1.0f);
             m_renderState.InterpolationMode = oldInterpolation;
             m_pColorGlyphCache->PreparedDrawTime(start, tile);
-            if (FAILED(hr)) { m_pColorGlyphCache->ReleasePrepared(); return hr; }
+            if (FAILED(hr)) { return hr; }
         }
-        m_pColorGlyphCache->ReleasePrepared();
         if (scope.active)
         {
             scope.active = false;
@@ -501,7 +529,6 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
     }
     catch (const std::bad_alloc &)
     {
-        if (m_pColorGlyphCache) m_pColorGlyphCache->ReleasePrepared();
         return S_OK;
     }
 }
