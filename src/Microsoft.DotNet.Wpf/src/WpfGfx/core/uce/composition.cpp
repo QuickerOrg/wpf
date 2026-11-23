@@ -10,6 +10,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 
 #if QUICKER_WPF_D3D11_FACADE
 extern LONGLONG QkFacadeClock();
@@ -111,6 +112,9 @@ CComposition::~CComposition()
 HRESULT 
 CComposition::Initialize()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("composition.initialize");
+#endif
     HRESULT hr = S_OK;
 
     // Create the MIL factory.
@@ -237,6 +241,9 @@ CComposition::ProcessCommandBatch(
     __in_ecount(1) CMilCommandBatch* pBatch
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("composition.commands");
+#endif
     HRESULT hr = S_OK;
 
     MILCMD nCmdType = MilCmdInvalid;
@@ -781,6 +788,9 @@ CComposition::Compose(
     __out_ecount(1) bool *pfPresentNeeded
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("composition.compose");
+#endif
     HRESULT hr = S_OK;
 
     // Increment the composition frame counter
@@ -847,6 +857,9 @@ CComposition::Render(
     __out_ecount(1) bool *pfPresentNeeded
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("composition.render");
+#endif
     HRESULT hr = S_OK;
 
     *pfPresentNeeded = false;

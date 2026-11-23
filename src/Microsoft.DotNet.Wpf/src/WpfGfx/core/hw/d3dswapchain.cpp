@@ -410,6 +410,9 @@ static bool QkPresentDenial(const WCHAR *phase)
 }
 HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *state,UINT width,UINT height,D3DFORMAT format,CD3DSwapChain **out,HWND opaqueHwnd)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("target.create.total");
+#endif
     *out=nullptr; CD3DSwapChain *s=new(1) CD3DSwapChain(nullptr,1,nullptr); if(!s) return E_OUTOFMEMORY;
     s->AddRef(); s->CD3DResource::Init(manager,0);
     HRESULT hr=S_OK;
@@ -425,9 +428,9 @@ HRESULT CD3DSwapChain::CreateFacade(CD3DResourceManager *manager,QkD3D11State *s
         desc.BufferCount=2; desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         desc.Scaling=DXGI_SCALING_STRETCH; desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
         // WPF 保留目标独立于轮换的 DXGI 后缓冲，局部更新只做 GPU 拷贝。
-        if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Create") ? E_ACCESSDENIED : factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain);
+        if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Create") ? E_ACCESSDENIED : QK_RT_CALL("target.CreateSwapChainForHwnd",factory->CreateSwapChainForHwnd(state->device.Get(),opaqueHwnd,&desc,nullptr,nullptr,&s->m_facadeSwapChain));
         if(s->m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainCreate);
-        if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
+        if(SUCCEEDED(hr)) hr=QK_RT_CALL("target.WindowAssociation",factory->MakeWindowAssociation(opaqueHwnd,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES));
         if(hr==E_ACCESSDENIED && SUCCEEDED(state->DeviceStatus())) {
             // 旧 flip 的延迟销毁或多个显示目标关联同 HWND 时，不能让整窗转成 CPU 光栅化。
             if(s->m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainRelease);
@@ -491,9 +494,9 @@ HRESULT CD3DSwapChain::ResizeFacade(CD3DResourceManager *manager,UINT width,UINT
             desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
             desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.Scaling=DXGI_SCALING_STRETCH;desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
             LONGLONG recreateStarted=QkFacadeClock();
-            if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Resize") ? E_ACCESSDENIED : factory->CreateSwapChainForHwnd(m_facadeState->device.Get(),oldDesc.OutputWindow,&desc,nullptr,nullptr,&m_facadeSwapChain);
+            if(SUCCEEDED(hr)) hr=QkPresentDenial(L"Resize") ? E_ACCESSDENIED : QK_RT_CALL("target.CreateSwapChainForHwnd",factory->CreateSwapChainForHwnd(m_facadeState->device.Get(),oldDesc.OutputWindow,&desc,nullptr,nullptr,&m_facadeSwapChain));
             if(m_facadeSwapChain) QkFacadeCount(QkFacadeCounter::SwapChainCreate);
-            if(SUCCEEDED(hr)) hr=factory->MakeWindowAssociation(oldDesc.OutputWindow,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES);
+            if(SUCCEEDED(hr)) hr=QK_RT_CALL("target.WindowAssociation",factory->MakeWindowAssociation(oldDesc.OutputWindow,DXGI_MWA_NO_ALT_ENTER|DXGI_MWA_NO_WINDOW_CHANGES));
             QkFacadeTiming("ResizeRecreate",recreateStarted,hr,width);
             char line[192]; StringCchPrintfA(line,ARRAYSIZE(line),"QK-FACADE resize-recreate hwnd=%p hr=0x%08x\n",oldDesc.OutputWindow,hr);QkFacadeTrace(line);
         }

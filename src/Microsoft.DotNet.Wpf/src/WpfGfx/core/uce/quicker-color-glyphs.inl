@@ -139,6 +139,8 @@ public:
         float sx, float sy, float deviceX, float deviceY, const D2D1_COLOR_F &foreground,
         std::vector<Prepared> &prepared, UINT64 sourceId, bool allowAnimation = true)
     {
+        // Keep the idle gate observable even while high-frequency facade scopes are paused.
+        QkRtScope rtRun("color.run", m_worker ? "{\"worker\":true}" : "{\"worker\":false}", true);
         if (!m_worker && PrewarmEnabled()) InterlockedExchange64(&m_lastForeground, static_cast<LONG64>(GetTickCount64()));
         Guard guard(!m_worker);
         prepared.reserve(run.glyphCount);
@@ -207,6 +209,7 @@ public:
         IDWriteFont *font = resource->GetColorGlyphFont();
         auto found = m_fonts.find(font);
         if (found != m_fonts.end()) return found->second.color ? found->second.face : Ptr<IDWriteFontFace>();
+        QkRtScope rtFace("color.face", "{}", true);
         const LONGLONG faceStart = StepClock();
         Font entry; entry.font = font;
         if (FAILED(resource->GetColorGlyphFace(&entry.face))) return nullptr;
@@ -315,6 +318,36 @@ private:
         for (BYTE value : key) { hash ^= value; hash *= 1099511628211ull; }
         return hash;
     }
+    std::string RtDetail(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
+        float sx, float sy, float px, float py, const D2D1_COLOR_F &fg, UINT64 hash, const std::vector<BYTE> *exactKey = nullptr)
+    {
+        if (!QkRtEnabled()) return {};
+        char info[700]; StringCchPrintfA(info, ARRAYSIZE(info),
+            "{\"hash\":\"%016llx\",\"glyph\":%u,\"face\":\"%p\",\"em\":%.9g,\"sx\":%.9g,\"sy\":%.9g,\"phaseX\":%.9g,\"phaseY\":%.9g,\"mode\":%u,\"bidi\":%u,\"sideways\":%u,\"foreground\":[%.9g,%.9g,%.9g,%.9g],\"worker\":%s,\"keyHex\":\"",
+            hash, run.glyphIndices[0], run.fontFace, run.fontEmSize, sx, sy, px, py, mode, run.bidiLevel,
+            run.isSideways ? 1u : 0u, fg.r, fg.g, fg.b, fg.a, m_worker ? "true" : "false");
+        std::string result = info;
+        const char hex[] = "0123456789abcdef";
+        for (BYTE value : exactKey ? *exactKey : m_keyBuffer) { result += hex[value >> 4]; result += hex[value & 15]; }
+        return result + "\"}";
+    }
+    std::string RtWorkDetail(const Work &item)
+    {
+        if (!QkRtEnabled()) return {};
+        // Decode the existing normalized key; no diagnostic field is added to Work/Entry.
+        DWRITE_GLYPH_RUN run = {}; run.fontFace = item.entry.face.Get(); run.fontEmSize = item.em;
+        run.glyphCount = 1; run.glyphIndices = &item.glyph;
+        size_t offset = sizeof(UINT) + sizeof(run.fontFace) + sizeof(run.fontEmSize);
+        memcpy(&run.bidiLevel, item.entry.key.data() + offset, sizeof(run.bidiLevel)); offset += sizeof(run.bidiLevel);
+        memcpy(&run.isSideways, item.entry.key.data() + offset, sizeof(run.isSideways)); offset += sizeof(run.isSideways);
+        DWRITE_MEASURING_MODE mode;
+        memcpy(&mode, item.entry.key.data() + offset, sizeof(mode));
+        std::string result = RtDetail(run, mode, item.sx, item.sy, item.phaseX, item.phaseY,
+            item.entry.foreground, item.entry.hash, &item.entry.key);
+        char info[160]; StringCchPrintfA(info, ARRAYSIZE(info), ",\"usesForeground\":%s,\"width\":%u,\"height\":%u,\"formats\":%u}",
+            item.entry.usesForeground ? "true" : "false", item.entry.width, item.entry.height, item.formats);
+        return result.substr(0, result.size() - 1) + info;
+    }
     HRESULT Get(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
                 float sx, float sy, float phaseX, float phaseY,
                 const D2D1_COLOR_F &foreground, Entry **result, std::vector<Work> &pending,
@@ -332,6 +365,7 @@ private:
             {
                 if (it->prewarmed)
                 {
+                    if (QkRtEnabled()) QkRtPoint("color.prewarm.hit", RtDetail(run, mode, sx, sy, phaseX, phaseY, foreground, hash).c_str());
                     --m_warmEntries; m_warmBytes -= static_cast<size_t>(it->width) * it->height * 4;
                     it->prewarmed = false;
                 }
@@ -368,6 +402,8 @@ private:
             }
         }
         const LONGLONG start = QkFacadeClock();
+        const std::string rtDetail = RtDetail(run, mode, sx, sy, phaseX, phaseY, foreground, hash);
+        QkRtScope rtPrepare("color.prepare", rtDetail.c_str(), true);
         Steps steps;
         steps.ticks[Init] = m_pendingInit; m_pendingInit = 0;
         steps.ticks[Face] = m_pendingFace; m_pendingFace = 0;
@@ -471,7 +507,7 @@ private:
             hr = m_dc4->CreateCommandList(&commands);
             if (FAILED(hr)) return S_FALSE;
             m_dc4->SetTarget(commands.Get());
-            m_dc4->BeginDraw(); m_dc4->SetTransform(transform);
+            QK_RT_CALL("color.BeginDraw",m_dc4->BeginDraw()); m_dc4->SetTransform(transform);
             m_dc4->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             hr = DrawLayers(drawLayers, brush.Get(), foreground);
             const HRESULT drawHr = m_dc4->EndDraw();
@@ -607,7 +643,7 @@ private:
             }
             const LONGLONG rasterStart = QkFacadeClock();
             const LONGLONG beginStart = StepClock();
-            m_dc4->BeginDraw();
+            QK_RT_CALL("color.BeginDraw",m_dc4->BeginDraw());
             m_dc4->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             const LONGLONG beginTicks = StepClock() - beginStart;
             HRESULT hr = S_OK;
@@ -615,6 +651,7 @@ private:
             {
                 auto &item = pending[i];
                 if (!item.entry.width || !item.entry.height) continue;
+                QkRtScope rtRaster("color.raster", RtWorkDetail(item).c_str(), true);
                 const LONGLONG drawStart = StepClock();
                 m_dc4->SetTransform(D2D1::Matrix3x2F::Identity());
                 m_dc4->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(item.x), static_cast<float>(item.y),
@@ -634,7 +671,7 @@ private:
                 if (FAILED(hr)) break;
             }
             const LONGLONG endStart = StepClock();
-            const HRESULT endHr = m_dc4->EndDraw();
+            const HRESULT endHr = QK_RT_CALL("color.EndDraw",m_dc4->EndDraw());
             const LONGLONG endTicks = StepClock() - endStart;
             m_dc4->SetTransform(D2D1::Matrix3x2F::Identity());
             Stats().rasterTicks += QkFacadeClock() - rasterStart;
@@ -657,6 +694,7 @@ private:
                 item.steps.ticks[RasterShared] = shared / static_cast<LONGLONG>(last - first) +
                     (i == first ? shared % static_cast<LONGLONG>(last - first) : 0);
                 item.steps.ticks[Raster] += item.steps.ticks[RasterShared];
+                QkRtScope rtCopy("color.copy", RtWorkDetail(item).c_str(), true);
                 const LONGLONG copyStart = StepClock(), publishStart = QkFacadeClock();
                 const UINT w = item.entry.width, h = item.entry.height;
                 if (w && h)
@@ -675,7 +713,8 @@ private:
                     if (SUCCEEDED(hr)) hr = CWICWrapperBitmap::Create(bitmap.Get(), &item.entry.bitmap);
                     if (FAILED(hr)) { Fallback("wic-wrap", hr); return S_FALSE; }
                 }
-                item.steps.Add(Copy, copyStart);
+                item.steps.Add(Copy, copyStart); rtCopy.Stop();
+                QkRtScope rtInsert("color.insert", RtWorkDetail(item).c_str(), true);
                 const LONGLONG insertStart = StepClock();
                 const size_t bytes = static_cast<size_t>(w) * h * 4;
                 while (!m_entries.empty() && (m_entries.size() >= 256 || m_bytes + bytes > 32 * 1024 * 1024))
@@ -694,7 +733,7 @@ private:
                 m_bytes += bytes; ++Stats().misses;
                 const auto &entry = m_entries.front();
                 for (size_t slot : item.slots) prepared[slot].bitmap = entry.bitmap;
-                item.steps.Add(Insert, insertStart);
+                item.steps.Add(Insert, insertStart); rtInsert.Stop();
                 Stats().rasterTicks += QkFacadeClock() - publishStart;
                 DWRITE_GLYPH_RUN run = {}; run.glyphIndices = &item.glyph; run.fontFace = entry.face.Get(); run.fontEmSize = item.em;
                 if (!m_worker) TraceSteps(run, item.sx, item.sy, item.phaseX, item.formats, w, h, item.steps);
@@ -792,6 +831,7 @@ private:
     };
     static DWORD WINAPI WorkerEntry(void *parameter)
     {
+        QkRtPoint("prewarm.thread.entry");
         auto *owner = static_cast<QkColorGlyphCache *>(parameter);
         const HMODULE module = owner->m_workerModule;
         SetThreadDescription(GetCurrentThread(), L"QkEmojiPrewarm");
@@ -824,9 +864,18 @@ private:
         {
             if (!Idle())
             {
-                if (!paused) { ++pauses; paused = true; }
+                if (!paused) { ++pauses; paused = true; QkRtPoint("prewarm.pause"); }
+                if (QkRtEnabled()) {
+                    const ULONGLONG now = GetTickCount64();
+                    const ULONGLONG last = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_lastForeground, 0, 0));
+                    if (now - last >= 100) {
+                        char info[200]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"nowTick\":%llu,\"lastForegroundTick\":%llu,\"idleMs\":%llu,\"requiredMs\":300}", now, last, now - last);
+                        QkRtPoint("prewarm.wait", info);
+                    }
+                }
                 WaitForSingleObject(m_wake, 50); continue;
             }
+            if (paused) QkRtPoint("prewarm.resume");
             paused = false;
             UINT attempted = 0, made = 0, omitted = 0;
             const LONGLONG start = QkFacadeClock();
@@ -848,6 +897,7 @@ private:
                 }
                 UINT16 glyph = 0;
                 if (FAILED(target.face->GetGlyphIndices(&code, 1, &glyph)) || !glyph) { ++omitted; continue; }
+                if (QkRtEnabled()) { char info[100]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"codepoint\":%u,\"glyph\":%u}", code, glyph); QkRtPoint("prewarm.candidate", info); }
                 const FLOAT advance = 0;
                 DWRITE_GLYPH_RUN run = {};
                 run.fontFace = target.face.Get(); run.fontEmSize = target.em; run.glyphCount = 1;
@@ -861,7 +911,14 @@ private:
                     if (!guard.held) { ++omitted; continue; }
                     if (Process().cache != this || Stopping()) break;
                     if (Contains(lookup) || m_entries.size() >= 256 || m_warmEntries >= 64 ||
-                        m_bytes >= 32 * 1024 * 1024 || m_warmBytes >= 8 * 1024 * 1024) { ++omitted; continue; }
+                        m_bytes >= 32 * 1024 * 1024 || m_warmBytes >= 8 * 1024 * 1024) {
+                        if (QkRtEnabled()) {
+                            const std::string detail = generator.RtDetail(run, target.mode, target.sx, target.sy, 0, 0, target.foreground, lookup.hash);
+                            char reason[200]; StringCchPrintfA(reason, ARRAYSIZE(reason), ",\"contains\":%s,\"entries\":%zu,\"warmEntries\":%zu,\"warmBytes\":%zu}", Contains(lookup) ? "true" : "false", m_entries.size(), m_warmEntries, m_warmBytes);
+                            QkRtPoint("prewarm.skip", (detail.substr(0, detail.size() - 1) + reason).c_str());
+                        }
+                        ++omitted; continue;
+                    }
                 }
                 std::vector<Prepared> prepared;
                 if (generator.PrepareGlyphs(run, target.mode, target.sx, target.sy, 0, 0, target.foreground, prepared, 0, false) != S_OK ||
@@ -874,6 +931,7 @@ private:
                         m_entries.size() < 256 && m_warmEntries < 64 && m_bytes + bytes <= 32 * 1024 * 1024 &&
                         m_warmBytes + bytes <= 8 * 1024 * 1024)
                     {
+                        if (QkRtEnabled()) QkRtPoint("prewarm.publish", generator.RtDetail(run, target.mode, target.sx, target.sy, 0, 0, target.foreground, entry.hash).c_str());
                         entry.prewarmed = true;
                         m_entries.push_back(std::move(entry));
                         auto inserted = --m_entries.end();
@@ -906,6 +964,7 @@ private:
             "QK-EMOJI6-SUMMARY batches=%llu generated=%llu skipped=%llu pauses=%llu elapsedMs=%.6f\n",
             batches, generated, skipped, pauses, totalTicks * 1000.0 / frequency.QuadPart);
         Log(line);
+        if (QkRtEnabled()) { char info[200]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"batches\":%llu,\"generated\":%llu,\"skipped\":%llu,\"pauses\":%llu}", batches, generated, skipped, pauses); QkRtPoint("prewarm.summary", info); }
     }
 
 private:
@@ -1016,29 +1075,30 @@ private:
     HRESULT Initialize()
     {
         if (m_initialized) return m_initResult;
+        QkRtScope rtInit("color.initialize", "{}", true);
         m_initialized = true;
         // 系统库仅在开关打开且实际遇到彩色字体时加载，不增加关闭时的导入依赖。
-        const HMODULE d2d = m_d2d.handle = LoadLibraryExW(L"d2d1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        const HMODULE dw = m_dw.handle = LoadLibraryExW(L"dwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        const HMODULE d2d = m_d2d.handle = QK_RT_CALL("color.load.d2d",LoadLibraryExW(L"d2d1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
+        const HMODULE dw = m_dw.handle = QK_RT_CALL("color.load.dwrite",LoadLibraryExW(L"dwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
         if (!d2d || !dw) return m_initResult;
         using CreateD2D = HRESULT (WINAPI *)(D2D1_FACTORY_TYPE, REFIID, const D2D1_FACTORY_OPTIONS *, void **);
         using CreateDW = HRESULT (WINAPI *)(DWRITE_FACTORY_TYPE, REFIID, IUnknown **);
         const auto createD2D = reinterpret_cast<CreateD2D>(GetProcAddress(d2d, "D2D1CreateFactory"));
         const auto createDW = reinterpret_cast<CreateDW>(GetProcAddress(dw, "DWriteCreateFactory"));
         HRESULT hr = createD2D && createDW ? S_OK : E_NOINTERFACE;
-        if (SUCCEEDED(hr)) hr = createD2D(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr,
-            reinterpret_cast<void **>(m_factory.GetAddressOf()));
-        if (SUCCEEDED(hr)) hr = createDW(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory4),
-            reinterpret_cast<IUnknown **>(m_dw4.GetAddressOf()));
+        if (SUCCEEDED(hr)) hr = QK_RT_CALL("color.D2DFactory",createD2D(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr,
+            reinterpret_cast<void **>(m_factory.GetAddressOf())));
+        if (SUCCEEDED(hr)) hr = QK_RT_CALL("color.DWriteFactory4",createDW(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory4),
+            reinterpret_cast<IUnknown **>(m_dw4.GetAddressOf())));
         // 模块成员最后析构，晚于其创建的全部 COM 对象。
-        if (SUCCEEDED(hr)) { (void)m_dw4.As(&m_dw8); hr = WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION_WPF, &m_wic); }
+        if (SUCCEEDED(hr)) { (void)QK_RT_CALL("color.Factory8.QI",m_dw4.As(&m_dw8)); hr = QK_RT_CALL("color.WICFactory",WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION_WPF, &m_wic)); }
         if (SUCCEEDED(hr)) hr = m_wic->CreateBitmap(1024, 1024, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &m_scratch);
         Ptr<ID2D1RenderTarget> target;
         const auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
-        if (SUCCEEDED(hr)) hr = m_factory->CreateWicBitmapRenderTarget(m_scratch.Get(), props, &target);
+        if (SUCCEEDED(hr)) hr = QK_RT_CALL("color.WicRenderTarget",m_factory->CreateWicBitmapRenderTarget(m_scratch.Get(), props, &target));
         if (SUCCEEDED(hr)) hr = target.As(&m_dc4);
-        if (SUCCEEDED(hr)) { (void)m_dc4.As(&m_dc7); m_dc4->GetTarget(&m_target); }
+        if (SUCCEEDED(hr)) { (void)QK_RT_CALL("color.Context7.QI",m_dc4.As(&m_dc7)); m_dc4->GetTarget(&m_target); }
         return m_initResult = hr;
     }
     void Trace()

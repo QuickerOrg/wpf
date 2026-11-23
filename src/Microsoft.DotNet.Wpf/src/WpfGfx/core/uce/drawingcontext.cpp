@@ -10,6 +10,7 @@
 //---------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 #include "quicker-surface-source.h"
 #if QUICKER_WPF_D3D11_FACADE
 #include "quicker-color-glyphs.inl"
@@ -97,6 +98,9 @@ CDrawingContext::CDrawingContext(
 HRESULT
 CDrawingContext::Initialize()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("drawing.initialize");
+#endif
     HRESULT hr = S_OK;
     
     // Cache a NULL immedate brush used by render targets that don't require brushes
@@ -1912,6 +1916,9 @@ CDrawingContext::DrawGlyphRun(
     __in_ecount_opt(1) CGlyphRunResource *pGlyphRun
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("text.draw");
+#endif
     HRESULT hr = S_OK;
 
     CBrushRealizer *pFillBrush = NULL;
@@ -5919,6 +5926,9 @@ CDrawingContext::Render(
     __out_ecount(1) BOOL *pfNeedsFullPresent
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("drawing.render");
+#endif
     HRESULT hr = S_OK;
 
     DbgReadControlFlags();

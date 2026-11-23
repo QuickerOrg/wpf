@@ -13,6 +13,7 @@
 //
 //------------------------------------------------------------------------
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 
 
 //+-----------------------------------------------------------------------
@@ -31,6 +32,9 @@ DWORD WINAPI CPartitionThread::ThreadMain(
     VOID *pv
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QkRtPoint("render.thread.entry");
+#endif
     //
     // Our rendering code is tested with single precision floating point
     // which is also the mode we like to run DX with.  So, we enforce

@@ -20,6 +20,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 
 #define MAX_TANK_WIDTH 2048
 #define MAX_TANK_HEIGHT 256
@@ -54,6 +55,9 @@ CD3DGlyphBank::Init(
     __in_ecount(1) CD3DResourceManager *pResourceManager
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("text.glyphbank.init");
+#endif
     HRESULT hr = S_OK;
 
     m_pDevice = pDevice;  // No AddRef because it would be a circular reference.
@@ -578,6 +582,9 @@ Cleanup:
 HRESULT
 CD3DGlyphBank::CreateTank(UINT uHeight, BOOL fPersistent)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("text.glyphbank.tank");
+#endif
     HRESULT hr = S_OK;
 
     Assert(uHeight <= m_uMaxTankHeight);

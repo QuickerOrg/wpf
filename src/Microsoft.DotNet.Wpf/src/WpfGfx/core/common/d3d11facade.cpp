@@ -10,6 +10,7 @@
 #include <dxgi1_4.h>
 
 LONGLONG QkFacadeClock() { LARGE_INTEGER value; QueryPerformanceCounter(&value); return value.QuadPart; }
+#include "quicker-rt-timing.inl"
 #include "s5i-interface-timing.h"
 #include "d3d11facade-pool.inl"
 #include "d3d11facade-counters.inl"
@@ -369,6 +370,9 @@ void QkD3D11State::TrimIfIdle()
 
 HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("device.create.total");
+#endif
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     *out = nullptr;
     WCHAR disabled[4] = {};
@@ -376,8 +380,9 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
         QkFacadeTrace("QK-FACADE software fallback: experiment no hardware\n");
         return WGXERR_NO_HARDWARE_DEVICE;
     }
+    QkRtScope rtAdapters("device.adapter-enumeration");
     ComPtr<IDXGIFactory1> factory;
-    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    HRESULT hr = QK_RT_CALL("device.DXGIFactory",CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
     if (FAILED(hr)) return hr;
     ComPtr<IDXGIAdapter1> selected;
     for (UINT a = 0; ; ++a)
@@ -398,6 +403,7 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
         }
         if (selected) break;
     }
+    rtAdapters.Stop();
     if (!selected) return WGXERR_NO_HARDWARE_DEVICE;
     QkD3D11State *state = new QkD3D11State;
     if (!state) return E_OUTOFMEMORY;
@@ -412,9 +418,9 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
     PROCESS_MEMORY_COUNTERS_EX before={},after={}; before.cb=after.cb=sizeof(before);
     if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),sizeof(before));
-    hr = D3D11CreateDevice(selected.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+    hr = QK_RT_CALL("device.D3D11CreateDevice",D3D11CreateDevice(selected.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-        &state->device, &state->featureLevel, &state->context);
+        &state->device, &state->featureLevel, &state->context));
     if(QkAccountEnabled()) GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),sizeof(after));
     char account[400]; StringCchPrintfA(account,400,"{\"event\":\"device-create\",\"device\":\"%p\",\"monitor\":\"%p\",\"privateBefore\":%llu,\"privateAfter\":%llu,\"hr\":%ld}\n",state->device.Get(),monitor,static_cast<ULONGLONG>(before.PrivateUsage),static_cast<ULONGLONG>(after.PrivateUsage),hr); QkAccountEvent(account);
     if (SUCCEEDED(hr)) hr = selected->GetDesc(&state->adapter);
@@ -430,7 +436,7 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     if(SUCCEEDED(hr)) hr=state->device.As(&device1);
     if(SUCCEEDED(hr)) {
         D3D_FEATURE_LEVEL selectedLevel;
-        hr=device1->CreateDeviceContextState(0,&state->featureLevel,1,D3D11_SDK_VERSION,__uuidof(ID3D11Device),&selectedLevel,&state->savedContext);
+        hr=QK_RT_CALL("state.Context",device1->CreateDeviceContextState(0,&state->featureLevel,1,D3D11_SDK_VERSION,__uuidof(ID3D11Device),&selectedLevel,&state->savedContext));
     }
     UINT support = 0;
     if (SUCCEEDED(hr)) hr = state->device->CheckFormatSupport(DXGI_FORMAT_B8G8R8A8_UNORM, &support);
@@ -474,6 +480,9 @@ void QkD3D11State::ReadCaps(D3DCAPS9 *caps, UINT *memory) const
 
 HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *luid)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("device.caps");
+#endif
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     struct Caps { D3DCAPS9 caps; UINT memory; LUID luid; };
     static SRWLOCK lock=SRWLOCK_INIT;
@@ -482,7 +491,7 @@ HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *l
     AcquireSRWLockExclusive(&lock);
     if(!factory || !factory->IsCurrent()) {
         cached.clear(); factory.Reset();
-        HRESULT hr=CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+        HRESULT hr=QK_RT_CALL("device.DXGIFactory",CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
         if(FAILED(hr)) { ReleaseSRWLockExclusive(&lock); return hr; }
     }
     ULONGLONG key=0; bool selected=false;
@@ -515,22 +524,25 @@ HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *l
 
 HRESULT QkD3D11State::Initialize()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("device.states.initialize");
+#endif
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
     Activate();
     HRESULT hr=S_OK;
     D3D11_BUFFER_DESC cb = {};
     cb.ByteWidth = 16; cb.Usage = D3D11_USAGE_DYNAMIC; cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    hr = device->CreateBuffer(&cb, nullptr, &m_constants);
+    hr = QK_RT_CALL("state.Buffer",device->CreateBuffer(&cb, nullptr, &m_constants));
     if (FAILED(hr)) return hr;
     QkAccount(m_constants.Get(),"constant-buffer",16);
-    cb.ByteWidth=sizeof(m_vsData); hr=device->CreateBuffer(&cb,nullptr,&m_vsConstants); if(FAILED(hr)) return hr;
-    cb.ByteWidth=sizeof(m_psData); hr=device->CreateBuffer(&cb,nullptr,&m_psConstants); if(FAILED(hr)) return hr;
+    cb.ByteWidth=sizeof(m_vsData); hr=QK_RT_CALL("state.Buffer",device->CreateBuffer(&cb,nullptr,&m_vsConstants)); if(FAILED(hr)) return hr;
+    cb.ByteWidth=sizeof(m_psData); hr=QK_RT_CALL("state.Buffer",device->CreateBuffer(&cb,nullptr,&m_psConstants)); if(FAILED(hr)) return hr;
     QkAccount(m_vsConstants.Get(),"constant-buffer",sizeof(m_vsData)); QkAccount(m_psConstants.Get(),"constant-buffer",sizeof(m_psData));
     for (UINT i = 0; i < 2; ++i)
     {
         D3D11_RASTERIZER_DESC rd = {};
         rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE; rd.ScissorEnable = i != 0;
-        hr = device->CreateRasterizerState(&rd, &m_raster[i]);
+        hr = QK_RT_CALL("state.Rasterizer",device->CreateRasterizerState(&rd, &m_raster[i]));
         if(SUCCEEDED(hr)) QkAccount(m_raster[i].Get(),"raster-state");
         if (FAILED(hr)) return hr;
     }
@@ -564,7 +576,7 @@ HRESULT QkD3D11State::CreateBuffer(UINT bytes, UINT bind, QkFacadeBuffer **out)
     if (!b) return E_OUTOFMEMORY;
     D3D11_BUFFER_DESC desc = {};
     desc.ByteWidth = bytes; desc.Usage = D3D11_USAGE_DYNAMIC; desc.BindFlags = bind; desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    HRESULT hr = device->CreateBuffer(&desc, nullptr, &b->buffer);
+    HRESULT hr = QK_RT_CALL("state.Buffer",device->CreateBuffer(&desc, nullptr, &b->buffer));
     if (FAILED(hr)) { b->Release(); return hr; }
     QkAccount(b->buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"dynamic-VB":"dynamic-IB",bytes);
     b->context = context; b->size = bytes; b->generation = generation; *out = b; return S_OK;
@@ -604,6 +616,7 @@ static void QkEmoji6PresentSample()
 
 HRESULT QkD3D11State::RecordPresent()
 {
+    QkRtPoint("present.record");
     QkEmoji6PresentSample();
     QK_INTERFACE_SCOPE(PresentRecord);
     if(!m_loggedFirstPresent) {
@@ -618,7 +631,7 @@ HRESULT QkD3D11State::RecordPresent()
     UINT queued; HRESULT hr=GetNumQueuedPresents(&queued); if(FAILED(hr)) return hr;
     ComPtr<ID3D11Query> query;
     if(!m_sparePresentQueries.empty()) { query=std::move(m_sparePresentQueries.back()); m_sparePresentQueries.pop_back(); QkFacadeCount(QkFacadeCounter::QueryReuse); }
-    if(!query) { QK_INTERFACE_SCOPE(Query); hr=device->CreateQuery(&desc,&query); if(FAILED(hr)) return hr; QkAccount(query.Get(),"present-query"); }
+    if(!query) { QK_INTERFACE_SCOPE(Query); hr=QK_RT_CALL("state.Query",device->CreateQuery(&desc,&query)); if(FAILED(hr)) return hr; QkAccount(query.Get(),"present-query"); }
     context->End(query.Get()); QK_INTERFACE_CALL(DriverFlush,context->Flush());
     m_presentQueries.push_back(query); return S_OK;
 }
@@ -775,7 +788,7 @@ HRESULT QkD3D11State::Apply()
         // XRGB 逻辑目标的 Alpha 恒为 1；物理 BGRA 仍供 flip GPU 拷贝与 GetDC 使用。
         if(targetOpaque) b.RenderTargetWriteMask &= ~D3D11_COLOR_WRITE_ENABLE_ALPHA;
         ComPtr<ID3D11BlendState> state;
-        HRESULT hr = device->CreateBlendState(&bd, &state); if(SUCCEEDED(hr)) QkAccount(state.Get(),"blend-state"); if (FAILED(hr)) return hr;
+        HRESULT hr = QK_RT_CALL("state.Blend",device->CreateBlendState(&bd, &state)); if(SUCCEEDED(hr)) QkAccount(state.Get(),"blend-state"); if (FAILED(hr)) return hr;
         found = m_blends.insert(std::make_pair(key, state)).first;
     }
     D3D11_MAPPED_SUBRESOURCE map;
@@ -815,14 +828,14 @@ HRESULT QkD3D11State::Draw(D3DPRIMITIVETYPE type, UINT vertices, UINT start)
     HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
     context->IASetPrimitiveTopology(type == D3DPT_TRIANGLELIST ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST : type == D3DPT_TRIANGLESTRIP ? D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
     if(!vertices) { QK_INTERFACE_SCOPE(ZeroDraw); }
-    { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); context->Draw(vertices, start); }
+    { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); QK_RT_CALL("draw.D3D11",context->Draw(vertices, start)); }
     QkFacadeTrace("QK-FACADE Draw original-hw\n");
     return DrawStatus();
 }
 HRESULT QkD3D11State::DrawIndexed(UINT indices, UINT startIndex, INT baseVertex)
 {
     HRESULT hr; { QK_INTERFACE_SCOPE(Apply); hr = Apply(); } if (FAILED(hr)) { char line[128]; StringCchPrintfA(line,128,"QK-FACADE Draw failed hr=0x%08x fvf=0x%x\n",hr,m_fvf); QkFacadeTrace(line); return hr; }
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); context->DrawIndexed(indices, startIndex, baseVertex); }
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); { QkInterfaceScope category(static_cast<QkInterfaceMetric>(static_cast<UINT>(QkInterfaceMetric::HwDraw)+m_drawKind)); QK_INTERFACE_SCOPE(Draw); QK_RT_CALL("draw.D3D11Indexed",context->DrawIndexed(indices, startIndex, baseVertex)); }
     QkFacadeTrace("QK-FACADE DrawIndexed original-hw\n");
     return DrawStatus();
 }
@@ -836,7 +849,7 @@ HRESULT QkD3D11State::Upload(ComPtr<ID3D11Buffer> &buffer, UINT &capacity, UINT 
         D3D11_BUFFER_DESC bd = {}; // UP 通常只传几个顶点；WRITE_DISCARD 的重命名以整个容量计费。
         // 按实际上传量增长，避免为每次小绘制重命名至少 1 MiB。
         bd.ByteWidth = max(required, 256U); bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        buffer.Reset(); HRESULT hr = device->CreateBuffer(&bd, nullptr, &buffer); if (FAILED(hr)) return hr; capacity = bd.ByteWidth; QkAccount(buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"upload-VB":"upload-IB",bd.ByteWidth);
+        buffer.Reset(); HRESULT hr = QK_RT_CALL("state.Buffer",device->CreateBuffer(&bd, nullptr, &buffer)); if (FAILED(hr)) return hr; capacity = bd.ByteWidth; QkAccount(buffer.Get(),bind==D3D11_BIND_VERTEX_BUFFER?"upload-VB":"upload-IB",bd.ByteWidth);
     }
     QK_INTERFACE_SCOPE(VertexUpload);
     UINT position=0;
@@ -860,7 +873,7 @@ HRESULT QkD3D11State::UploadGeometry(const void *vertices, UINT bytes, const WOR
     if(total>m_geometryCapacity) {
         D3D11_BUFFER_DESC desc={}; desc.ByteWidth=max(total,262144U);
         desc.Usage=D3D11_USAGE_DYNAMIC;desc.BindFlags=D3D11_BIND_VERTEX_BUFFER|D3D11_BIND_INDEX_BUFFER;desc.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
-        ComPtr<ID3D11Buffer> buffer;HRESULT hr=device->CreateBuffer(&desc,nullptr,&buffer);if(FAILED(hr))return hr;
+        ComPtr<ID3D11Buffer> buffer;HRESULT hr=QK_RT_CALL("state.Buffer",device->CreateBuffer(&desc,nullptr,&buffer));if(FAILED(hr))return hr;
         m_uploadGeometry=buffer;m_geometryCapacity=desc.ByteWidth;m_geometryCursor=0;
         QkAccount(buffer.Get(),"upload-geometry-VB-IB",desc.ByteWidth);
     }

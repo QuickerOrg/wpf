@@ -14,6 +14,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 #include "quicker-glyph-state-trace.h"
 UINT64 QkG0hCompositionFrame(){return static_cast<UINT64>(CComposition::GetFrameLastComposed());}
 
@@ -819,7 +820,10 @@ CGlyphRunResource::CreateRealization(
     MilTextRenderingMode::Enum textRenderingMode,
     __out CGlyphRunRealization **ppRealization
     )                    
-{      
+{
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("text.realization.create");
+#endif
     HRESULT hr = S_OK;
     CGlyphRunRealization *pRealization = NULL;
     IDWriteGlyphRunAnalysis *pIDWriteGlyphRunAnalysis = NULL;
@@ -1897,6 +1901,9 @@ CGlyphRunRealization::RealizeAlphaBoundsAndTextures(
     __deref_out_ecount_opt(*pTextureSize) BYTE **pAlphaMap
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("text.realization.alpha");
+#endif
     HRESULT hr = S_OK;
     RECT boundingBox;
     BYTE *pAlphaValues = NULL;

@@ -50,10 +50,10 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         td.Usage=D3D11_USAGE_DEFAULT; td.BindFlags=D3D11_BIND_SHADER_RESOURCE;
         if(desc->Usage&(D3DUSAGE_RENDERTARGET|D3DUSAGE_AUTOGENMIPMAP)) td.BindFlags|=D3D11_BIND_RENDER_TARGET;
         if(desc->Usage&D3DUSAGE_AUTOGENMIPMAP) td.MiscFlags=D3D11_RESOURCE_MISC_GENERATE_MIPS;
-        HRESULT hr; { QK_INTERFACE_SCOPE(Texture); hr=device->CreateTexture2D(&td,nullptr,&t->texture); } if(FAILED(hr)) return hr;
+        HRESULT hr; { QK_INTERFACE_SCOPE(Texture); hr=QK_RT_CALL("resource.Texture2D",device->CreateTexture2D(&td,nullptr,&t->texture)); } if(FAILED(hr)) return hr;
         ULONGLONG bytes=0; for(UINT n=0;n<levels;++n) bytes+=static_cast<ULONGLONG>(max(1U,td.Width>>n))*max(1U,td.Height>>n)*QkPixelSize(desc->Format);
         QkAccount(t->texture.Get(),(desc->Usage&D3DUSAGE_RENDERTARGET)?"RT-offscreen":(desc->Format==D3DFMT_A8 || desc->Format==D3DFMT_L8)?"glyph-atlas":"sample-texture",bytes);
-        { QK_INTERFACE_SCOPE(Srv); hr=device->CreateShaderResourceView(t->texture.Get(),nullptr,&t->srv); } if(FAILED(hr)) return hr;
+        { QK_INTERFACE_SCOPE(Srv); hr=QK_RT_CALL("resource.SRV",device->CreateShaderResourceView(t->texture.Get(),nullptr,&t->srv)); } if(FAILED(hr)) return hr;
         QkAccount(t->srv.Get(),"SRV");
     }
     for(UINT n=0;n<levels;++n) {
@@ -68,12 +68,12 @@ HRESULT QkD3D11State::CreateTexture(const D3DSURFACE_DESC *desc,UINT levels,QkTe
         if(t->texture && !v->srv) {
             D3D11_SHADER_RESOURCE_VIEW_DESC sd={}; sd.Format=format; sd.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D;
             sd.Texture2D.MostDetailedMip=n; sd.Texture2D.MipLevels=1;
-            HRESULT hr; { QK_INTERFACE_SCOPE(Srv); hr=device->CreateShaderResourceView(t->texture.Get(),&sd,&v->srv); } if(FAILED(hr)) return hr;
+            HRESULT hr; { QK_INTERFACE_SCOPE(Srv); hr=QK_RT_CALL("resource.SRV",device->CreateShaderResourceView(t->texture.Get(),&sd,&v->srv)); } if(FAILED(hr)) return hr;
             QkAccount(v->srv.Get(),"SRV");
         }
         if((td.BindFlags&D3D11_BIND_RENDER_TARGET) && !v->rtv) {
             D3D11_RENDER_TARGET_VIEW_DESC rd={}; rd.Format=format; rd.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2D; rd.Texture2D.MipSlice=n;
-            HRESULT hr; { QK_INTERFACE_SCOPE(Rtv); hr=device->CreateRenderTargetView(t->texture.Get(),&rd,&v->rtv); } if(FAILED(hr)) return hr;
+            HRESULT hr; { QK_INTERFACE_SCOPE(Rtv); hr=QK_RT_CALL("resource.RTV",device->CreateRenderTargetView(t->texture.Get(),&rd,&v->rtv)); } if(FAILED(hr)) return hr;
             QkAccount(v->rtv.Get(),"RTV");
         }
         t->levels.push_back(v.Detach());
@@ -148,7 +148,7 @@ HRESULT QkSurfaceHandle::LockRect(D3DLOCKED_RECT *out,const RECT *rect,DWORD fla
             D3D11_TEXTURE2D_DESC td={}; texture->GetDesc(&td);
             td.Usage=D3D11_USAGE_STAGING; td.BindFlags=td.MiscFlags=0; td.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
             ComPtr<ID3D11Device> device; texture->GetDevice(&device);
-            HRESULT hr=device->CreateTexture2D(&td,nullptr,&staging); if(FAILED(hr)) return hr;
+            HRESULT hr=QK_RT_CALL("resource.Texture2D",device->CreateTexture2D(&td,nullptr,&staging)); if(FAILED(hr)) return hr;
             QkAccount(staging.Get(),"staging",static_cast<ULONGLONG>(td.Width)*td.Height*QkPixelSize(desc.Format));
         }
         context->CopyResource(staging.Get(),texture.Get());
@@ -257,6 +257,9 @@ static std::string QkModernHLSL(std::string s)
 
 HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacadeShader **out)
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("shader.lookup");
+#endif
     QK_INTERFACE_SCOPE(ShaderLookup);
     *out=nullptr;
     std::string text(source,bytes); while(!text.empty() && text.back()==0) text.pop_back();
@@ -266,23 +269,32 @@ HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacade
     auto found=m_shaderCache.find(key);
     if(found!=m_shaderCache.end()) { QkFacadeCount(QkFacadeCounter::ShaderCacheHit); *out=found->second.Get(); (*out)->AddRef(); return S_OK; }
     QkFacadeCount(QkFacadeCounter::ShaderCacheMiss);
-    if(fragments) { QkFacadeCount(QkFacadeCounter::ShaderConvert); text=QkModernHLSL(text); }
+    if(fragments) { QkFacadeCount(QkFacadeCounter::ShaderConvert); text=QK_RT_CALL("shader.translate",QkModernHLSL(text)); }
     ComPtr<QkFacadeShader> shader; shader.Attach(new QkFacadeShader);
     if(!shader) return E_OUTOFMEMORY;
+    std::string rtShader;
+    if (QkRtEnabled()) {
+        UINT64 hash = 14695981039346656037ull;
+        for (unsigned char value : key) { hash ^= value; hash *= 1099511628211ull; }
+        char info[240]; StringCchPrintfA(info, ARRAYSIZE(info),
+            "{\"hash\":\"%016llx\",\"entry\":\"%s\",\"profile\":\"%s\",\"source\":",
+            hash, fragments ? (vertex ? "VertexShaderImpl" : "PixelShaderImpl") : (vertex ? "VS" : "PS"), vertex ? "vs_4_0" : "ps_4_0");
+        rtShader = std::string(info) + QkRtQuote(text) + "}";
+    }
     ComPtr<ID3DBlob> errors;
     QkFacadeCount(QkFacadeCounter::ShaderCompile);
     QkInterfaceScope compileScope(QkInterfaceMetric::ShaderCompile);
-    HRESULT hr=D3DCompile(text.data(),text.size(),"QkOriginalHw",nullptr,nullptr,
+    HRESULT hr=QkRtCall("shader.D3DCompile",[&](){return D3DCompile(text.data(),text.size(),"QkOriginalHw",nullptr,nullptr,
         fragments?(vertex?"VertexShaderImpl":"PixelShaderImpl"):(vertex?"VS":"PS"),vertex?"vs_4_0":"ps_4_0",
-        D3DCOMPILE_ENABLE_STRICTNESS,0,&shader->code,&errors);
+        D3DCOMPILE_ENABLE_STRICTNESS,0,&shader->code,&errors);},rtShader.c_str());
     if(FAILED(hr)) { if(errors) QkFacadeTrace(static_cast<const char*>(errors->GetBufferPointer())); return hr; }
-    if(vertex) hr=device->CreateVertexShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->vs);
-    else hr=device->CreatePixelShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->ps);
+    if(vertex) hr=QK_RT_CALL("shader.CreateVS",device->CreateVertexShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->vs));
+    else hr=QK_RT_CALL("shader.CreatePS",device->CreatePixelShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->ps));
     if(SUCCEEDED(hr)) QkAccount(vertex?static_cast<ID3D11DeviceChild*>(shader->vs.Get()):static_cast<ID3D11DeviceChild*>(shader->ps.Get()),vertex?"vertex-shader":"pixel-shader");
     if(FAILED(hr)) return hr;
     if(!vertex) {
         ComPtr<ID3D11ShaderReflection> reflection;
-        hr=D3DReflect(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection)); if(FAILED(hr)) return hr;
+        hr=QK_RT_CALL("shader.Reflect",D3DReflect(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection))); if(FAILED(hr)) return hr;
         D3D11_SHADER_DESC desc; hr=reflection->GetDesc(&desc); if(FAILED(hr)) return hr;
         for(UINT n=0;n<desc.BoundResources;++n) {
             D3D11_SHADER_INPUT_BIND_DESC input; hr=reflection->GetResourceBindingDesc(n,&input); if(FAILED(hr)) return hr;
@@ -322,10 +334,10 @@ HRESULT QkD3D11State::InputLayout(QkFacadeShader *shader,ID3D11InputLayout **out
             desc.push_back({"TEXCOORD",n,formats[dim],0,offset,D3D11_INPUT_PER_VERTEX_DATA,0}); offset+=sizes[dim];
         }
         ComPtr<ID3D11InputLayout> layout;
-        HRESULT hr=device->CreateInputLayout(desc.data(),static_cast<UINT>(desc.size()),shader->code->GetBufferPointer(),shader->code->GetBufferSize(),&layout);
+        HRESULT hr=QK_RT_CALL("state.InputLayout",device->CreateInputLayout(desc.data(),static_cast<UINT>(desc.size()),shader->code->GetBufferPointer(),shader->code->GetBufferSize(),&layout));
         if(FAILED(hr)) {
             ComPtr<ID3D11ShaderReflection> reflection;
-            if(SUCCEEDED(D3DReflect(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection)))) {
+            if(SUCCEEDED(QK_RT_CALL("shader.Reflect",D3DReflect(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection))))) {
                 D3D11_SHADER_DESC sd; reflection->GetDesc(&sd);
                 for(UINT n=0;n<sd.InputParameters;++n) {
                     D3D11_SIGNATURE_PARAMETER_DESC param; reflection->GetInputParameterDesc(n,&param);
@@ -492,7 +504,7 @@ HRESULT QkD3D11State::ApplyShaders()
         DWORD c=st[D3DSAMP_BORDERCOLOR]; sd.BorderColor[0]=((c>>16)&255)/255.f; sd.BorderColor[1]=((c>>8)&255)/255.f; sd.BorderColor[2]=(c&255)/255.f; sd.BorderColor[3]=(c>>24)/255.f;
         memcpy(&sd.MipLODBias,&st[D3DSAMP_MIPMAPLODBIAS],sizeof(float));
         std::string key(reinterpret_cast<char*>(&sd),sizeof(sd)); auto f=m_samplerCache.find(key);
-        if(f==m_samplerCache.end()) { ComPtr<ID3D11SamplerState> sampler; hr=device->CreateSamplerState(&sd,&sampler); if(FAILED(hr)) return hr; QkAccount(sampler.Get(),"sampler-state"); f=m_samplerCache.insert(std::make_pair(key,sampler)).first; }
+        if(f==m_samplerCache.end()) { ComPtr<ID3D11SamplerState> sampler; hr=QK_RT_CALL("state.Sampler",device->CreateSamplerState(&sd,&sampler)); if(FAILED(hr)) return hr; QkAccount(sampler.Get(),"sampler-state"); f=m_samplerCache.insert(std::make_pair(key,sampler)).first; }
         resolved=f->second;memcpy(m_resolvedSamplerData[n],st,sizeof(st));
         }
         bool submitSampler=!validBindings || !m_samplerBindingKnown[n] || m_appliedSamplers[n]!=resolved.Get();
@@ -526,13 +538,13 @@ HRESULT QkD3D11State::CopyColorFast(QkSurfaceHandle *src,QkSurfaceHandle *dst,co
     }
     if(!m_copyConstants) {
         D3D11_BUFFER_DESC bd={};bd.ByteWidth=16;bd.Usage=D3D11_USAGE_DYNAMIC;bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER;bd.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
-        hr=device->CreateBuffer(&bd,nullptr,&m_copyConstants);if(FAILED(hr))return hr;QkAccount(m_copyConstants.Get(),"copy-buffer",16);
+        hr=QK_RT_CALL("state.Buffer",device->CreateBuffer(&bd,nullptr,&m_copyConstants));if(FAILED(hr))return hr;QkAccount(m_copyConstants.Get(),"copy-buffer",16);
     }
     const bool opaque=dst->desc.Format==D3DFMT_X8R8G8B8;
     if(!m_copyBlends[opaque]) {
         D3D11_BLEND_DESC bd={};auto &blend=bd.RenderTarget[0];blend.RenderTargetWriteMask=opaque?7:15;
         blend.SrcBlend=blend.SrcBlendAlpha=D3D11_BLEND_ONE;blend.DestBlend=blend.DestBlendAlpha=D3D11_BLEND_ZERO;blend.BlendOp=blend.BlendOpAlpha=D3D11_BLEND_OP_ADD;
-        hr=device->CreateBlendState(&bd,&m_copyBlends[opaque]);if(FAILED(hr))return hr;QkAccount(m_copyBlends[opaque].Get(),"copy-blend-state");
+        hr=QK_RT_CALL("state.Blend",device->CreateBlendState(&bd,&m_copyBlends[opaque]));if(FAILED(hr))return hr;QkAccount(m_copyBlends[opaque].Get(),"copy-blend-state");
     }
     const INT offset[]={a.left-b.left,a.top-b.top,0,0};
     if(!m_copyOffsetValid || memcmp(m_copyOffset,offset,sizeof(offset))) {
@@ -554,7 +566,7 @@ HRESULT QkD3D11State::CopyColorFast(QkSurfaceHandle *src,QkSurfaceHandle *dst,co
         context->VSSetShader(m_copyVS->vs.Get(),nullptr,0);context->PSSetShader(m_copyPS->ps.Get(),nullptr,0);
         context->PSSetConstantBuffers(0,1,m_copyConstants.GetAddressOf());context->PSSetShaderResources(0,1,src->srv.GetAddressOf());
     }
-    { QK_INTERFACE_SCOPE(BlitFormatDraw);QkInterfaceScope draw(QkInterfaceMetric::Draw);context->Draw(3,0); }
+    { QK_INTERFACE_SCOPE(BlitFormatDraw);QkInterfaceScope draw(QkInterfaceMetric::Draw);QK_RT_CALL("draw.D3D11",context->Draw(3,0)); }
     // 与旧路径一致：解绑由下一次 Copy/BindTarget 或普通 Draw 的验证完成。
     return DeviceStatus();
 }
@@ -669,7 +681,7 @@ HRESULT QkD3D11State::PresentBlit(ID3D11Texture2D *source, ID3D11Texture2D *dest
     auto readback=[&](ID3D11Texture2D *texture,std::vector<BYTE> &pixels)->HRESULT {
         D3D11_TEXTURE2D_DESC desc;texture->GetDesc(&desc);
         desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
-        ComPtr<ID3D11Texture2D> staging;HRESULT hr=device->CreateTexture2D(&desc,nullptr,&staging);if(FAILED(hr)) return hr;
+        ComPtr<ID3D11Texture2D> staging;HRESULT hr=QK_RT_CALL("resource.Texture2D",device->CreateTexture2D(&desc,nullptr,&staging));if(FAILED(hr)) return hr;
         QkAccount(staging.Get(),"staging",static_cast<ULONGLONG>(desc.Width)*desc.Height*4);
         QkFacadeCount(QkFacadeCounter::Readback);
         QkFacadeCount(QkFacadeCounter::ReadbackBytes,static_cast<ULONGLONG>(desc.Width)*desc.Height*4);
@@ -690,9 +702,9 @@ HRESULT QkD3D11State::PresentBlit(ID3D11Texture2D *source, ID3D11Texture2D *dest
     D3D11_TEXTURE2D_DESC d; source->GetDesc(&d);
     a.desc.Width=d.Width; a.desc.Height=d.Height; a.desc.Format=D3DFMT_A8R8G8B8;
     destination->GetDesc(&d); b.desc.Width=d.Width;b.desc.Height=d.Height;b.desc.Format=D3DFMT_A8R8G8B8;
-    HRESULT hr=device->CreateShaderResourceView(source,nullptr,&a.srv);
+    HRESULT hr=QK_RT_CALL("resource.SRV",device->CreateShaderResourceView(source,nullptr,&a.srv));
     if(SUCCEEDED(hr)) QkAccount(a.srv.Get(),"SRV");
-    if(SUCCEEDED(hr)) hr=device->CreateRenderTargetView(destination,nullptr,&b.rtv);
+    if(SUCCEEDED(hr)) hr=QK_RT_CALL("resource.RTV",device->CreateRenderTargetView(destination,nullptr,&b.rtv));
     if(SUCCEEDED(hr)) QkAccount(b.rtv.Get(),"RTV");
     if(SUCCEEDED(hr)) hr=Copy(&a,&src,&b,&dst,D3DTEXF_LINEAR,true);
     if(SUCCEEDED(hr) && validate) {

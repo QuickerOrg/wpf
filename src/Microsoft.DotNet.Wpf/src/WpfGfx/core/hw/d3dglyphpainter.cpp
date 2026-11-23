@@ -20,6 +20,7 @@
 //------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 #include "../glyph/quicker-text-trace.h"
 
 CD3DGlyphRunPainter::CD3DGlyphRunPainter()
@@ -49,6 +50,9 @@ CD3DGlyphRunPainter::Paint(
     MilPixelFormat::Enum fmtTargetSurface
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("text.glyphpainter");
+#endif
     HRESULT hr = S_OK;
         
     m_pDevice = pDevice;

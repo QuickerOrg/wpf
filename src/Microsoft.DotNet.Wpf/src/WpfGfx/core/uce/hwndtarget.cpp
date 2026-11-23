@@ -14,6 +14,7 @@
 //---------------------------------------------------------------------------------
 
 #include "precomp.hpp"
+#include "../common/quicker-rt-timing.h"
 #include "quicker-quality-capture.h"
 #if !QUICKER_WPF_D3D11_FACADE
 #include "quicker-native-contract-target.h"
@@ -88,6 +89,9 @@ CSlaveHWndRenderTarget::Render(
     __out_ecount(1) bool *pfNeedsPresent
     )
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("target.render");
+#endif
 #if QUICKER_WPF_D3D11_FACADE
     QkS5mScope s5mScope(20,21,m_hWnd);
 #endif
@@ -901,6 +905,9 @@ Cleanup:
 HRESULT
 CSlaveHWndRenderTarget::EnsureRenderTargetInternal()
 {
+#if QUICKER_WPF_D3D11_FACADE
+    QK_RT_SCOPE("target.ensure");
+#endif
     HRESULT hr = S_OK;
 
     CMILFactory *pMILFactory = NULL;

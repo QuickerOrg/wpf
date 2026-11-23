@@ -326,6 +326,7 @@ CD3DDeviceLevel1::Init(
 {
 #if QUICKER_WPF_D3D11_FACADE
     struct Guard { Guard(){QkD3D11State::EnterShared();} ~Guard(){QkD3D11State::LeaveShared();} } guard;
+    QK_RT_SCOPE("device.wrapper.initialize");
     m_resourceManager.Init(this);
     HRESULT hr = QkD3D11State::Create(pDisplay->GetHMONITOR(), &m_facade);
     if (FAILED(hr)) return hr;
@@ -3421,7 +3422,7 @@ CD3DDeviceLevel1::Present(
                 // 仅首次命中这类参数时分配；普通相等 source/destination 路径不增加驻留。
                 D3D11_TEXTURE2D_DESC desc;surface->m_facadeTexture->GetDesc(&desc);
                 desc.MiscFlags=0;desc.BindFlags=D3D11_BIND_RENDER_TARGET;
-                hr=m_facade->device->CreateTexture2D(&desc,nullptr,&pD3DSwapChain->m_facadePresentHistory);
+                hr=QK_RT_CALL("resource.Texture2D",m_facade->device->CreateTexture2D(&desc,nullptr,&pD3DSwapChain->m_facadePresentHistory));
                 if(FAILED(hr)) return hr;
                 QkAccount(pD3DSwapChain->m_facadePresentHistory.Get(),"present-history",static_cast<ULONGLONG>(w)*h*4);
                 m_facade->context->CopyResource(pD3DSwapChain->m_facadePresentHistory.Get(),surface->m_facadeTexture.Get());
@@ -3467,8 +3468,8 @@ CD3DDeviceLevel1::Present(
         DXGI_PRESENT_PARAMETERS params={}; params.DirtyRectsCount=static_cast<UINT>(dirty.size()); params.pDirtyRects=dirty.empty()?nullptr:dirty.data();
         LONGLONG presentStarted=QkFacadeClock();
         presentCopyScope.Stop();
-        hr=QK_INTERFACE_CALL(Present,pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
-            (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params));
+        hr=QK_INTERFACE_CALL(Present,QK_RT_CALL("present.DXGI",pD3DSwapChain->m_facadeSwapChain->Present1(pD3DSwapChain->m_facadeSyncInterval,
+            (dwD3DPresentFlags&D3DPRESENT_DONOTWAIT)?DXGI_PRESENT_DO_NOT_WAIT:0,&params)));
         QkFacadeTiming("Present1",presentStarted,hr,pD3DSwapChain->m_facadeSyncInterval);
         if(hr==DXGI_STATUS_OCCLUDED) {
             // 原 WDDM 普通窗口策略：短暂退让、通知 UI 重验窗口，保持后续渲染可恢复。

@@ -10,6 +10,7 @@
 #include <vector>
 #include <string>
 #include <d3dcompiler.h>
+#include "quicker-rt-timing.h"
 
 // WPF 内部执行对象；不实现任何 D3D9 COM 接口。
 HRESULT QkFacadeUnimpl(const char *name);
