@@ -69,6 +69,11 @@ public:
     IDWriteFont *GetColorGlyphFont() const { return m_pIDWriteFont; }
     HRESULT GetColorGlyphFace(IDWriteFontFace **face) { return CDWriteFontFaceCache::GetFontFace(m_pIDWriteFont, face); }
     void GetColorGlyphRun(IDWriteFontFace *face, DWRITE_GLYPH_RUN *glyphRun, DWRITE_MEASURING_MODE *mode);
+    UINT64 GetColorGlyphId();
+    HRESULT RequestColorGlyphPass();
+private:
+    volatile LONG64 m_colorGlyphId;
+public:
 #endif
 
     void GetBounds(

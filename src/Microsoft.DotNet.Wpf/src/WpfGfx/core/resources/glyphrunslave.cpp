@@ -18,6 +18,21 @@
 UINT64 QkG0hCompositionFrame(){return static_cast<UINT64>(CComposition::GetFrameLastComposed());}
 
 #if QUICKER_WPF_D3D11_FACADE
+UINT64 CGlyphRunResource::GetColorGlyphId()
+{
+    // 开关关闭和普通文字不分配身份；序号避免跨资源/地址重用造成动画误判。
+    LONG64 known = InterlockedCompareExchange64(&m_colorGlyphId, 0, 0);
+    if (known) return static_cast<UINT64>(known);
+    static volatile LONG64 nextColorGlyphId = 0;
+    const LONG64 value = InterlockedIncrement64(&nextColorGlyphId);
+    known = InterlockedCompareExchange64(&m_colorGlyphId, value, 0);
+    return static_cast<UINT64>(known ? known : value);
+}
+HRESULT CGlyphRunResource::RequestColorGlyphPass()
+{
+    // 复用 WPF 自身文字动画的延迟合成与 NotifyOnChanged；析构现有注销逻辑覆盖此请求。
+    return m_pGlyphCache->RequestSubsequentPass(this);
+}
 void CGlyphRunResource::GetColorGlyphRun(IDWriteFontFace *face, DWRITE_GLYPH_RUN *run, DWRITE_MEASURING_MODE *mode)
 {
     run->fontFace = face; // 从绘制上下文的有界字体映射借用，不增加逐 run 引用计数。
