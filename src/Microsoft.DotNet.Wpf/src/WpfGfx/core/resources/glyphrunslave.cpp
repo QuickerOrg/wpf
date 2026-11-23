@@ -18,10 +18,9 @@
 UINT64 QkG0hCompositionFrame(){return static_cast<UINT64>(CComposition::GetFrameLastComposed());}
 
 #if QUICKER_WPF_D3D11_FACADE
-HRESULT CGlyphRunResource::GetColorGlyphRun(DWRITE_GLYPH_RUN *run, DWRITE_MEASURING_MODE *mode)
+void CGlyphRunResource::GetColorGlyphRun(IDWriteFontFace *face, DWRITE_GLYPH_RUN *run, DWRITE_MEASURING_MODE *mode)
 {
-    HRESULT hr = CDWriteFontFaceCache::GetFontFace(m_pIDWriteFont, &run->fontFace);
-    if (FAILED(hr)) return hr;
+    run->fontFace = face; // 从绘制上下文的有界字体映射借用，不增加逐 run 引用计数。
     run->fontEmSize = m_muSize;
     run->glyphCount = m_usGlyphCount;
     run->glyphIndices = m_pGlyphIndices;
@@ -30,7 +29,6 @@ HRESULT CGlyphRunResource::GetColorGlyphRun(DWRITE_GLYPH_RUN *run, DWRITE_MEASUR
     run->isSideways = IsSideways();
     run->bidiLevel = m_bidiLevel;
     *mode = m_measuringMethod;
-    return S_OK;
 }
 #endif
 

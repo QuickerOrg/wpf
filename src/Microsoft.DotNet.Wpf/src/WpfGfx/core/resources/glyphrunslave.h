@@ -65,8 +65,10 @@ public:
     void Disable();
 
 #if QUICKER_WPF_D3D11_FACADE
-    // 返回完整原始定位；调用方持有并释放 glyphRun.fontFace。
-    HRESULT GetColorGlyphRun(DWRITE_GLYPH_RUN *glyphRun, DWRITE_MEASURING_MODE *mode);
+    // 字体映射持有 IDWriteFont/Face；普通文字命中后不再创建字体面或 QI。
+    IDWriteFont *GetColorGlyphFont() const { return m_pIDWriteFont; }
+    HRESULT GetColorGlyphFace(IDWriteFontFace **face) { return CDWriteFontFaceCache::GetFontFace(m_pIDWriteFont, face); }
+    void GetColorGlyphRun(IDWriteFontFace *face, DWRITE_GLYPH_RUN *glyphRun, DWRITE_MEASURING_MODE *mode);
 #endif
 
     void GetBounds(

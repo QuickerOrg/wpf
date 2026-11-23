@@ -1,8 +1,9 @@
-// EMOJI1：只在私有门面中编译；由 drawingcontext.cpp 的宏保护入口包含。
+// EMOJI2：只在私有门面中编译；由 drawingcontext.cpp 的宏保护入口包含。
 #if QUICKER_WPF_D3D11_FACADE
 #include <dwrite_3.h>
 #include <d2d1_3.h>
 #include <list>
+#include <unordered_map>
 #include <new>
 #include <cmath>
 
@@ -13,6 +14,7 @@ public:
     struct Entry
     {
         std::vector<BYTE> key;
+        UINT64 hash;
         Ptr<IDWriteFontFace> face; // 防止字体面指针在逐出前被复用。
         Ptr<IWGXBitmap> bitmap;
         D2D1_COLOR_F foreground;
@@ -20,6 +22,86 @@ public:
         float left, top;
         UINT width, height;
     };
+
+    struct Prepared
+    {
+        Ptr<IWGXBitmap> bitmap;
+        float x, y, left, top;
+        UINT width, height;
+        bool hit;
+        LONGLONG lookupTicks;
+    };
+
+    QkColorGlyphCache()
+    {
+        m_keyBuffer.reserve(4096 * 14 + 128);
+        m_origins.reserve(4096);
+        m_prepared.reserve(4096);
+    }
+
+    HRESULT PrepareGlyphs(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
+        float sx, float sy, float deviceX, float deviceY, const D2D1_COLOR_F &foreground,
+        const std::vector<Prepared> **result)
+    {
+        m_prepared.clear();
+        HRESULT hr = Initialize();
+        if (FAILED(hr)) { Fallback("initialize", hr); return S_FALSE; }
+        m_origins.resize(run.glyphCount);
+        const DWRITE_MATRIX matrix = { sx, 0, 0, sy, deviceX, deviceY };
+        // 由 DirectWrite 消费完整 advance/offset、bidi、sideways 和 measuring mode；不猜测 ZWJ 的字形结构。
+        hr = m_dw4->ComputeGlyphOrigins(&run, mode, D2D1::Point2F(), &matrix, m_origins.data());
+        if (FAILED(hr)) { Fallback("glyph-origins", hr); return S_FALSE; }
+        const FLOAT zeroAdvance = 0;
+        DWRITE_GLYPH_RUN glyph = run;
+        glyph.glyphCount = 1; glyph.glyphAdvances = &zeroAdvance; glyph.glyphOffsets = nullptr;
+        size_t preparedBytes = 0;
+        for (UINT i = 0; i < run.glyphCount; ++i)
+        {
+            const float x = deviceX + m_origins[i].x * sx, y = deviceY + m_origins[i].y * sy;
+            if (!std::isfinite(x) || !std::isfinite(y) || fabsf(x) > 1e7f || fabsf(y) > 1e7f)
+            { Fallback("glyph-position"); return S_FALSE; }
+            const float snappedX = floorf(x * 4 + 0.5f) / 4;
+            const float baseX = floorf(snappedX), baseY = floorf(y + 0.5f);
+            glyph.glyphIndices = run.glyphIndices + i;
+            Entry *entry = nullptr;
+            const LONGLONG start = QkFacadeClock();
+            // advance/offset 已折入绝对位置；规范化后的单字形键可跨任意字符串复用。
+            hr = Get(glyph, mode, sx, sy, snappedX - baseX, 0, foreground, &entry);
+            if (hr != S_OK) return hr;
+            const LONGLONG lookupTicks = QkFacadeClock() - start;
+            preparedBytes += static_cast<size_t>(entry->width) * entry->height * 4;
+            if (preparedBytes > 32 * 1024 * 1024) { Fallback("prepared-size-limit"); return S_FALSE; }
+            Prepared tile = { entry->bitmap, baseX, baseY, entry->left, entry->top,
+                entry->width, entry->height, m_lastHit, lookupTicks };
+            m_prepared.push_back(std::move(tile));
+        }
+        // 全部成功才绘制；持 bitmap 引用，避免长 run 中 LRU 逐出使前面字形悬空。
+        *result = &m_prepared;
+        return S_OK;
+    }
+
+    void ReleasePrepared() { m_prepared.clear(); }
+
+    void PreparedDrawTime(LONGLONG start, const Prepared &tile)
+    {
+        m_lastHit = tile.hit;
+        DrawTime(start - tile.lookupTicks);
+    }
+
+    IDWriteFontFace *ColorFace(CGlyphRunResource *resource)
+    {
+        IDWriteFont *font = resource->GetColorGlyphFont();
+        auto found = m_fonts.find(font);
+        if (found != m_fonts.end()) return found->second.color ? found->second.face.Get() : nullptr;
+        Font entry; entry.font = font;
+        if (FAILED(resource->GetColorGlyphFace(&entry.face))) return nullptr;
+        Ptr<IDWriteFontFace2> color;
+        entry.color = SUCCEEDED(entry.face.As(&color)) && color->IsColorFont();
+        // 字体键和字体面均持引用；清空时没有悬空地址身份可被误命中。
+        if (m_fonts.size() >= 64) m_fonts.clear();
+        auto inserted = m_fonts.emplace(font, std::move(entry));
+        return inserted.first->second.color ? inserted.first->second.face.Get() : nullptr;
+    }
 
     static bool Enabled()
     {
@@ -56,7 +138,9 @@ public:
                 const D2D1_COLOR_F &foreground, Entry **result)
     {
         m_lastHit = false;
-        std::vector<BYTE> key;
+        auto &key = m_keyBuffer;
+        key.clear();
+        Append(key, &run.glyphCount, sizeof(run.glyphCount));
         Append(key, &run.fontFace, sizeof(run.fontFace));
         Append(key, &run.fontEmSize, sizeof(run.fontEmSize));
         Append(key, &run.bidiLevel, sizeof(run.bidiLevel));
@@ -72,8 +156,13 @@ public:
             const DWRITE_GLYPH_OFFSET offset = run.glyphOffsets ? run.glyphOffsets[i] : DWRITE_GLYPH_OFFSET{};
             Append(key, &offset, sizeof(offset));
         }
-        for (auto it = m_entries.begin(); it != m_entries.end(); ++it)
+        // FNV-1a 流式预计算 64 位哈希；相同哈希才比较完整键，碰撞不影响正确性。
+        UINT64 hash = 14695981039346656037ull;
+        for (BYTE value : key) { hash ^= value; hash *= 1099511628211ull; }
+        const auto range = m_index.equal_range(hash);
+        for (auto candidate = range.first; candidate != range.second; ++candidate)
         {
+            auto it = candidate->second;
             if (it->key == key && (!it->usesForeground || memcmp(&it->foreground, &foreground, sizeof(foreground)) == 0))
             {
                 m_entries.splice(m_entries.begin(), m_entries, it);
@@ -103,7 +192,8 @@ public:
         {
             hr = m_dw4->TranslateColorGlyphRun(D2D1::Point2F(), &run, nullptr, formats, mode, &matrix, 0, &layers);
         }
-        if (hr == DWRITE_E_NOCOLOR) { Fallback("no-color"); return S_FALSE; }
+        const bool monochrome = hr == DWRITE_E_NOCOLOR;
+        if (monochrome) hr = S_OK; // 彩色字体中的单色字形也光栅化，保持整条 run 的原始叠加顺序。
         if (FAILED(hr)) { Fallback("translate", hr); return S_FALSE; }
 
         Ptr<ID2D1SolidColorBrush> brush;
@@ -119,7 +209,13 @@ public:
         bool usesForeground = false;
         UINT formatsSeen = 0, foregroundLayers = 0;
         BOOL next = FALSE;
-        while (SUCCEEDED(hr = layers->MoveNext(&next)) && next)
+        if (monochrome)
+        {
+            usesForeground = true;
+            formatsSeen = DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
+            m_dc4->DrawGlyphRun(D2D1::Point2F(), &run, brush.Get(), mode);
+        }
+        while (!monochrome && SUCCEEDED(hr = layers->MoveNext(&next)) && next)
         {
             const DWRITE_COLOR_GLYPH_RUN1 *layer = nullptr;
             hr = layers->GetCurrentRun(&layer);
@@ -150,7 +246,7 @@ public:
                 break;
             case DWRITE_GLYPH_IMAGE_FORMATS_COLR_PAINT_TREE:
                 if (!m_dc7) { hr = E_NOINTERFACE; break; }
-                usesForeground = true; // paint tree 可引用前景色；保守地进入键。
+                usesForeground |= PaintUsesForeground(layer->glyphRun);
                 brush->SetColor(foreground);
                 m_dc7->DrawPaintGlyphRun(origin, &layer->glyphRun, brush.Get(), 0, layer->measuringMode);
                 break;
@@ -169,38 +265,56 @@ public:
         D2D1_RECT_F bounds;
         hr = m_dc4->GetImageLocalBounds(commands.Get(), &bounds);
         if (FAILED(hr)) { Fallback("ink-bounds", hr); return S_FALSE; }
-        const float left = floorf(bounds.left) - 2, top = floorf(bounds.top) - 2;
-        const float width = ceilf(bounds.right) + 2 - left, height = ceilf(bounds.bottom) + 2 - top;
+        // 空白等无墨迹单色字形也缓存为空条目，不让整条混排 run 回退。
+        const bool empty = bounds.right <= bounds.left || bounds.bottom <= bounds.top;
+        const float left = empty ? 0 : floorf(bounds.left) - 2, top = empty ? 0 : floorf(bounds.top) - 2;
+        const float width = empty ? 0 : ceilf(bounds.right) + 2 - left, height = empty ? 0 : ceilf(bounds.bottom) + 2 - top;
         if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(width) || !std::isfinite(height) ||
-            width <= 0 || height <= 0 || width > 1024 || height > 1024)
+            width < 0 || height < 0 || width > 1024 || height > 1024)
         { Fallback("size-limit"); return S_FALSE; }
         const UINT w = static_cast<UINT>(width), h = static_cast<UINT>(height);
+        Entry entry = {};
+        if (!empty)
+        {
         m_dc4->BeginDraw();
+        m_dc4->PushAxisAlignedClip(D2D1::RectF(0, 0, width, height), D2D1_ANTIALIAS_MODE_ALIASED);
         m_dc4->Clear(D2D1::ColorF(0, 0, 0, 0));
         m_dc4->SetTransform(D2D1::Matrix3x2F::Translation(-left, -top));
         m_dc4->DrawImage(commands.Get());
+        m_dc4->PopAxisAlignedClip();
         hr = m_dc4->EndDraw();
         m_dc4->SetTransform(D2D1::Matrix3x2F::Identity());
         if (FAILED(hr)) { Fallback("rasterize", hr); return S_FALSE; }
-        std::vector<BYTE> pixels(w * h * 4);
         const WICRect crop = { 0, 0, static_cast<INT>(w), static_cast<INT>(h) };
-        hr = m_scratch->CopyPixels(&crop, w * 4, static_cast<UINT>(pixels.size()), pixels.data());
         Ptr<IWICBitmap> bitmap;
-        if (SUCCEEDED(hr)) hr = m_wic->CreateBitmapFromMemory(w, h, GUID_WICPixelFormat32bppPBGRA,
-            w * 4, static_cast<UINT>(pixels.size()), pixels.data(), &bitmap);
-        Entry entry = {};
+        hr = m_wic->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bitmap);
+        Ptr<IWICBitmapLock> pixels;
+        if (SUCCEEDED(hr)) hr = bitmap->Lock(&crop, WICBitmapLockWrite, &pixels);
+        UINT stride = 0, bytesAvailable = 0; BYTE *data = nullptr;
+        if (SUCCEEDED(hr)) hr = pixels->GetStride(&stride);
+        if (SUCCEEDED(hr)) hr = pixels->GetDataPointer(&bytesAvailable, &data);
+        if (SUCCEEDED(hr)) hr = m_scratch->CopyPixels(&crop, stride, bytesAvailable, data);
+        pixels.Reset(); // 直接写入最终 WIC 存储，省去中间 vector 和 CreateBitmapFromMemory 的复制。
         if (SUCCEEDED(hr)) hr = CWICWrapperBitmap::Create(bitmap.Get(), &entry.bitmap);
         if (FAILED(hr)) { Fallback("wic-wrap", hr); return S_FALSE; }
-        entry.key = std::move(key); entry.face = run.fontFace;
+        }
+        entry.key = key; entry.hash = hash; entry.face = run.fontFace;
         entry.foreground = foreground; entry.usesForeground = usesForeground;
         entry.left = left; entry.top = top; entry.width = w; entry.height = h;
         const size_t bytes = static_cast<size_t>(w) * h * 4;
         while (!m_entries.empty() && (m_entries.size() >= 256 || m_bytes + bytes > 32 * 1024 * 1024))
         {
             m_bytes -= static_cast<size_t>(m_entries.back().width) * m_entries.back().height * 4;
+            const auto victim = --m_entries.end();
+            const auto victims = m_index.equal_range(victim->hash);
+            for (auto it = victims.first; it != victims.second; ++it)
+                if (it->second == victim) { m_index.erase(it); break; }
             m_entries.pop_back(); ++m_evictions;
         }
-        m_entries.push_front(std::move(entry)); m_bytes += bytes; ++m_misses;
+        m_entries.push_front(std::move(entry));
+        try { m_index.emplace(hash, m_entries.begin()); }
+        catch (...) { m_entries.pop_front(); throw; }
+        m_bytes += bytes; ++m_misses;
         m_rasterTicks += QkFacadeClock() - start;
         char line[240];
         StringCchPrintfA(line, ARRAYSIZE(line), "QK-EMOJI1 raster glyphs=%u formats=0x%x foregroundLayers=%u foregroundKey=%u size=%ux%u scale=%.3f,%.3f phase=%.5f,%.5f\n",
@@ -211,6 +325,26 @@ public:
     }
 
 private:
+    static bool PaintUsesForeground(const DWRITE_GLYPH_RUN &run)
+    {
+        Ptr<IDWriteFontFace7> face;
+        if (FAILED(run.fontFace->QueryInterface(IID_PPV_ARGS(&face)))) return true;
+        Ptr<IDWritePaintReader> reader;
+        if (FAILED(face->CreatePaintReader(DWRITE_GLYPH_IMAGE_FORMATS_COLR_PAINT_TREE,
+            DWRITE_PAINT_FEATURE_LEVEL_COLR_V1, &reader))) return true;
+        for (UINT i = 0; i < run.glyphCount; ++i)
+        {
+            DWRITE_PAINT_ELEMENT paint = {};
+            D2D_RECT_F clip;
+            DWRITE_PAINT_ATTRIBUTES attributes = DWRITE_PAINT_ATTRIBUTES_NONE;
+            // 官方字形属性覆盖整棵 paint tree，包含嵌套颜色；未知或失败时保守保留颜色键。
+            if (FAILED(reader->SetCurrentGlyph(run.glyphIndices[i], &paint, &clip, &attributes)) ||
+                paint.paintType == DWRITE_PAINT_TYPE_NONE ||
+                (attributes & DWRITE_PAINT_ATTRIBUTES_USES_TEXT_COLOR) != 0) return true;
+        }
+        return false;
+    }
+
     static void Log(const char *line)
     {
         WCHAR path[32768];
@@ -281,7 +415,13 @@ private:
     Ptr<ID2D1DeviceContext4> m_dc4;
     Ptr<ID2D1DeviceContext7> m_dc7;
     Ptr<ID2D1Image> m_target;
+    struct Font { Ptr<IDWriteFont> font; Ptr<IDWriteFontFace> face; bool color = false; };
+    std::unordered_map<IDWriteFont *, Font> m_fonts;
+    std::vector<BYTE> m_keyBuffer;
+    std::vector<D2D1_POINT_2F> m_origins;
+    std::vector<Prepared> m_prepared;
     std::list<Entry> m_entries;
+    std::unordered_multimap<UINT64, std::list<Entry>::iterator> m_index;
     size_t m_bytes = 0;
     UINT64 m_hits = 0, m_misses = 0, m_fallbacks = 0, m_evictions = 0, m_draws = 0;
     LONGLONG m_drawTicks = 0, m_rasterTicks = 0;
@@ -294,51 +434,75 @@ HRESULT CDrawingContext::TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunRes
 
     DWRITE_GLYPH_RUN run = {};
     DWRITE_MEASURING_MODE mode;
-    if (FAILED(resource->GetColorGlyphRun(&run, &mode))) return S_OK;
-    Microsoft::WRL::ComPtr<IDWriteFontFace> face; face.Attach(run.fontFace);
-    Microsoft::WRL::ComPtr<IDWriteFontFace2> colorFace;
-    if (FAILED(face.As(&colorFace)) || !colorFace->IsColorFont()) return S_OK;
-    if (!run.glyphCount || run.glyphCount > 4096) return S_OK;
-    ApplyRenderState();
-    const auto &world = m_contextState.WorldToDevice;
-    const float sx = world.GetM11(), sy = world.GetM22();
-    if (world.GetM12() != 0 || world.GetM21() != 0 || !std::isfinite(sx) || !std::isfinite(sy) || sx <= 0 || sy <= 0)
-        return S_OK;
-    MilColorF color;
-    FLOAT opacity;
-    if (FAILED(static_cast<CMilSolidColorBrushDuce *>(brush)->GetColorGlyphBrush(&color, &opacity))) return S_OK;
-    opacity *= static_cast<float>(ClampAlpha(color.a));
-    color = Convert_MilColorF_scRGB_To_MilColorF_sRGB(&color);
-    const D2D1_COLOR_F foreground = { color.r, color.g, color.b, 1.0f };
-    const auto origin = resource->GetOrigin();
-    const float deviceX = origin.X * sx + world.GetDx(), deviceY = origin.Y * sy + world.GetDy();
-    if (!std::isfinite(deviceX) || !std::isfinite(deviceY) || fabsf(deviceX) > 1e7f || fabsf(deviceY) > 1e7f) return S_OK;
-    // 1/64 设备像素量化；整数平移不进入缓存键。位图最后仍以整数设备位置绘制。
-    const float baseX = floorf(deviceX), baseY = floorf(deviceY);
-    const float phaseX = floorf((deviceX - baseX) * 64 + 0.5f) / 64;
-    const float phaseY = floorf((deviceY - baseY) * 64 + 0.5f) / 64;
+    // 创建和字体映射可能分配；统一置于 bad_alloc 后备保护内。
     try
     {
         if (!m_pColorGlyphCache) m_pColorGlyphCache = new QkColorGlyphCache();
-        const LONGLONG start = QkFacadeClock();
-        QkColorGlyphCache::Entry *entry = nullptr;
-        if (m_pColorGlyphCache->Get(run, mode, sx, sy, phaseX, phaseY, foreground, &entry) != S_OK) return S_OK;
-        CMatrix<CoordinateSpace::BaseSampling, CoordinateSpace::LocalRendering> textureToLocal(true);
-        textureToLocal.SetM11(1 / sx); textureToLocal.SetM22(1 / sy);
-        textureToLocal.SetDx((baseX + entry->left - world.GetDx()) / sx);
-        textureToLocal.SetDy((baseY + entry->top - world.GetDy()) / sy);
-        CMilRectF rect;
-        rect.left = textureToLocal.GetDx(); rect.top = textureToLocal.GetDy();
-        rect.right = rect.left + entry->width / sx; rect.bottom = rect.top + entry->height / sy;
-        const MilRectF source = { 0, 0, static_cast<float>(entry->width), static_cast<float>(entry->height) };
-        const auto oldInterpolation = m_renderState.InterpolationMode;
-        m_renderState.InterpolationMode = MilBitmapInterpolationMode::NearestNeighbor;
-        const HRESULT hr = DrawBitmap(entry->bitmap.Get(), &source, &rect, opacity);
-        m_renderState.InterpolationMode = oldInterpolation;
-        *drawn = true; // DrawPath 开始后绝不再叠加单色后备。
-        m_pColorGlyphCache->DrawTime(start);
-        return hr;
+        IDWriteFontFace *face = m_pColorGlyphCache->ColorFace(resource);
+        if (!face) return S_OK;
+        resource->GetColorGlyphRun(face, &run, &mode);
+        if (!run.glyphCount || run.glyphCount > 4096) return S_OK;
+        ApplyRenderState();
+        const auto &world = m_contextState.WorldToDevice;
+        const float sx = world.GetM11(), sy = world.GetM22();
+        const float dx = world.GetDx(), dy = world.GetDy();
+        if (world.GetM12() != 0 || world.GetM21() != 0 || !std::isfinite(sx) || !std::isfinite(sy) || sx <= 0 || sy <= 0)
+            return S_OK;
+        MilColorF color;
+        FLOAT opacity;
+        if (FAILED(static_cast<CMilSolidColorBrushDuce *>(brush)->GetColorGlyphBrush(&color, &opacity))) return S_OK;
+        opacity *= static_cast<float>(ClampAlpha(color.a));
+        color = Convert_MilColorF_scRGB_To_MilColorF_sRGB(&color);
+        const D2D1_COLOR_F foreground = { color.r, color.g, color.b, 1.0f };
+        const auto origin = resource->GetOrigin();
+        const float deviceX = origin.X * sx + world.GetDx(), deviceY = origin.Y * sy + world.GetDy();
+        if (!std::isfinite(deviceX) || !std::isfinite(deviceY) || fabsf(deviceX) > 1e7f || fabsf(deviceY) > 1e7f) return S_OK;
+        const std::vector<QkColorGlyphCache::Prepared> *tiles = nullptr;
+        if (m_pColorGlyphCache->PrepareGlyphs(run, mode, sx, sy, deviceX, deviceY, foreground, &tiles) != S_OK)
+        { m_pColorGlyphCache->ReleasePrepared(); return S_OK; }
+        // 画刷透明度作用于整个 run；重叠字形先 src-over 合成，再统一乘透明度。
+        // 世界矩阵的平移已复制，PushOpacity 的临时目标不会改变局部定位计算。
+        struct OpacityScope
+        {
+            CDrawingContext *context;
+            bool active = false;
+            ~OpacityScope() { if (active) (void)context->Pop(); }
+        } scope = { this };
+        if (opacity < 1.0f)
+        {
+            const HRESULT hr = PushOpacity(opacity, nullptr);
+            if (FAILED(hr)) { m_pColorGlyphCache->ReleasePrepared(); return hr; }
+            scope.active = true;
+        }
+        *drawn = true; // 开始任何 DrawBitmap 后绝不再叠加整条单色 run。
+        for (const auto &tile : *tiles)
+        {
+            const LONGLONG start = QkFacadeClock();
+            if (!tile.bitmap) { m_pColorGlyphCache->PreparedDrawTime(start, tile); continue; }
+            CMilRectF rect;
+            rect.left = (tile.x + tile.left - dx) / sx;
+            rect.top = (tile.y + tile.top - dy) / sy;
+            rect.right = rect.left + tile.width / sx; rect.bottom = rect.top + tile.height / sy;
+            const MilRectF source = { 0, 0, static_cast<float>(tile.width), static_cast<float>(tile.height) };
+            const auto oldInterpolation = m_renderState.InterpolationMode;
+            m_renderState.InterpolationMode = MilBitmapInterpolationMode::NearestNeighbor;
+            const HRESULT hr = DrawBitmap(tile.bitmap.Get(), &source, &rect, 1.0f);
+            m_renderState.InterpolationMode = oldInterpolation;
+            m_pColorGlyphCache->PreparedDrawTime(start, tile);
+            if (FAILED(hr)) { m_pColorGlyphCache->ReleasePrepared(); return hr; }
+        }
+        m_pColorGlyphCache->ReleasePrepared();
+        if (scope.active)
+        {
+            scope.active = false;
+            return Pop();
+        }
+        return S_OK;
     }
-    catch (const std::bad_alloc &) { return S_OK; }
+    catch (const std::bad_alloc &)
+    {
+        if (m_pColorGlyphCache) m_pColorGlyphCache->ReleasePrepared();
+        return S_OK;
+    }
 }
 #endif
