@@ -255,19 +255,78 @@ static std::string QkModernHLSL(std::string s)
         "float4 QkSample1D(Texture2D t,SamplerState s,float u){return t.Sample(s,float2(u,0.5));}\n"+s;
 }
 
+// 只在预编译未命中/布局失败的诊断路径装入与 wpfgfx 同目录、同后缀的编译器。
+// 普通导入会使加载器在 DLL 初始化前装入 D3DCompiler，即使没有执行编译也一样。
+template<class T> static T QkCompilerProc(const char *name)
+{
+    static HMODULE module=[]()->HMODULE {
+#if defined(_M_ARM64)
+        // 原 ARM64 导入使用系统编译器，不带 WPF 私有后缀。
+        QkRtPoint("shader.compiler.load");
+        return LoadLibraryExW(L"D3DCompiler_47.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
+#else
+        HMODULE self=nullptr;
+        WCHAR path[32768]={};
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&QkReplace),&self)) return nullptr;
+        const DWORD length=GetModuleFileNameW(self,path,ARRAYSIZE(path));
+        if(!length || length>=ARRAYSIZE(path)) return nullptr;
+        WCHAR *filename=wcsrchr(path,L'\\');
+        if(!filename || _wcsnicmp(++filename,L"wpfgfx",6)!=0) return nullptr;
+        std::wstring full(path,filename-path);
+        full+=L"D3DCompiler_47"; full+=filename+6;
+        QkRtPoint("shader.compiler.load");
+        return LoadLibraryExW(full.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);
+#endif
+    }();
+    return module?reinterpret_cast<T>(GetProcAddress(module,name)):nullptr;
+}
+static HRESULT QkReflectShader(LPCVOID data,SIZE_T size,REFIID iid,void **out)
+{
+    auto reflect=QkCompilerProc<decltype(&D3DReflect)>("D3DReflect");
+    return reflect?reflect(data,size,iid,out):HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
+}
+
+// 预编译表保存全文及反射出的槽；命中路径不调用 D3DCreateBlob/D3DReflect。
+#include "d3d11-precompiled.h"
+class QkEmbeddedShaderBlob final : public ID3DBlob
+{
+    LONG refs=1;
+    const QkPrecompiledShader &value;
+public:
+    explicit QkEmbeddedShaderBlob(const QkPrecompiledShader &item):value(item) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void **out) override {
+        if(!out) return E_POINTER;
+        *out=nullptr;
+        if(iid!=__uuidof(IUnknown) && iid!=__uuidof(ID3DBlob)) return E_NOINTERFACE;
+        *out=static_cast<ID3DBlob*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override { LONG n=InterlockedDecrement(&refs); if(!n) delete this; return n; }
+    LPVOID STDMETHODCALLTYPE GetBufferPointer() override { return const_cast<BYTE*>(value.code); }
+    SIZE_T STDMETHODCALLTYPE GetBufferSize() override { return value.size; }
+};
+// 只规范化行尾和尾部 NUL，不折叠 token/注释；哈希碰撞后仍比较完整 profile+源码。
+static std::string QkNormalizeShader(std::string value)
+{
+    while(!value.empty() && value.back()==0) value.pop_back();
+    QkReplace(value,"\r\n","\n"); return value;
+}
+
 HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacadeShader **out)
 {
 #if QUICKER_WPF_D3D11_FACADE
     QK_RT_SCOPE("shader.lookup");
 #endif
+    QkFacadeSharedGuard sharedGuard;
     QK_INTERFACE_SCOPE(ShaderLookup);
     *out=nullptr;
-    std::string text(source,bytes); while(!text.empty() && text.back()==0) text.pop_back();
+    std::string text=QkNormalizeShader(std::string(source,bytes));
     bool fragments=text.find("VertexShaderImpl(")!=std::string::npos;
     // 先按规范化原文查缓存。相同片段命中时不再重复执行整套 HLSL 正则转换；VS/PS 仍用不同键。
     std::string key=(vertex?"vs_4_0:":"ps_4_0:")+text;
-    auto found=m_shaderCache.find(key);
-    if(found!=m_shaderCache.end()) { QkFacadeCount(QkFacadeCounter::ShaderCacheHit); *out=found->second.Get(); (*out)->AddRef(); return S_OK; }
+    auto found=m_shaderCache->find(key);
+    if(found!=m_shaderCache->end()) { QkFacadeCount(QkFacadeCounter::ShaderCacheHit); *out=found->second.Get(); (*out)->AddRef(); return S_OK; }
     QkFacadeCount(QkFacadeCounter::ShaderCacheMiss);
     if(fragments) { QkFacadeCount(QkFacadeCounter::ShaderConvert); text=QK_RT_CALL("shader.translate",QkModernHLSL(text)); }
     ComPtr<QkFacadeShader> shader; shader.Attach(new QkFacadeShader);
@@ -281,20 +340,33 @@ HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacade
             hash, fragments ? (vertex ? "VertexShaderImpl" : "PixelShaderImpl") : (vertex ? "VS" : "PS"), vertex ? "vs_4_0" : "ps_4_0");
         rtShader = std::string(info) + QkRtQuote(text) + "}";
     }
-    ComPtr<ID3DBlob> errors;
-    QkFacadeCount(QkFacadeCounter::ShaderCompile);
-    QkInterfaceScope compileScope(QkInterfaceMetric::ShaderCompile);
-    HRESULT hr=QkRtCall("shader.D3DCompile",[&](){return D3DCompile(text.data(),text.size(),"QkOriginalHw",nullptr,nullptr,
-        fragments?(vertex?"VertexShaderImpl":"PixelShaderImpl"):(vertex?"VS":"PS"),vertex?"vs_4_0":"ps_4_0",
-        D3DCOMPILE_ENABLE_STRICTNESS,0,&shader->code,&errors);},rtShader.c_str());
-    if(FAILED(hr)) { if(errors) QkFacadeTrace(static_cast<const char*>(errors->GetBufferPointer())); return hr; }
+    const QkPrecompiledShader *precompiled=nullptr;
+    const char *profile=vertex?"vs_4_0":"ps_4_0";
+    for(const auto &item:qkPrecompiledShaders)
+        if(strcmp(item.profile,profile)==0 && text==item.source) { precompiled=&item; break; }
+    HRESULT hr=S_OK;
+    if(precompiled) {
+        shader->code.Attach(new(std::nothrow) QkEmbeddedShaderBlob(*precompiled));
+        if(!shader->code) return E_OUTOFMEMORY;
+        shader->sampledMask=precompiled->textures; shader->samplerMask=precompiled->samplers;
+        QkRtPoint("shader.precompiled.hit",rtShader.c_str());
+    } else {
+        QkRtPoint("shader.precompiled.miss",rtShader.c_str());
+        ComPtr<ID3DBlob> errors;
+        QkFacadeCount(QkFacadeCounter::ShaderCompile);
+        QkInterfaceScope compileScope(QkInterfaceMetric::ShaderCompile);
+        hr=QkRtCall("shader.D3DCompile",[&](){auto compile=QkCompilerProc<decltype(&D3DCompile)>("D3DCompile"); if(!compile) return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND); return compile(text.data(),text.size(),"QkOriginalHw",nullptr,nullptr,
+            fragments?(vertex?"VertexShaderImpl":"PixelShaderImpl"):(vertex?"VS":"PS"),profile,
+            D3DCOMPILE_ENABLE_STRICTNESS,0,&shader->code,&errors);},rtShader.c_str());
+        if(FAILED(hr)) { if(errors) QkFacadeTrace(static_cast<const char*>(errors->GetBufferPointer())); return hr; }
+    }
     if(vertex) hr=QK_RT_CALL("shader.CreateVS",device->CreateVertexShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->vs));
     else hr=QK_RT_CALL("shader.CreatePS",device->CreatePixelShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),nullptr,&shader->ps));
     if(SUCCEEDED(hr)) QkAccount(vertex?static_cast<ID3D11DeviceChild*>(shader->vs.Get()):static_cast<ID3D11DeviceChild*>(shader->ps.Get()),vertex?"vertex-shader":"pixel-shader");
     if(FAILED(hr)) return hr;
-    if(!vertex) {
+    if(!vertex && !precompiled) {
         ComPtr<ID3D11ShaderReflection> reflection;
-        hr=QK_RT_CALL("shader.Reflect",D3DReflect(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection))); if(FAILED(hr)) return hr;
+        hr=QK_RT_CALL("shader.Reflect",QkReflectShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection))); if(FAILED(hr)) return hr;
         D3D11_SHADER_DESC desc; hr=reflection->GetDesc(&desc); if(FAILED(hr)) return hr;
         for(UINT n=0;n<desc.BoundResources;++n) {
             D3D11_SHADER_INPUT_BIND_DESC input; hr=reflection->GetResourceBindingDesc(n,&input); if(FAILED(hr)) return hr;
@@ -307,7 +379,7 @@ HRESULT QkD3D11State::Compile(const char *source,UINT bytes,bool vertex,QkFacade
             }
         }
     }
-    shader->generation=generation; m_shaderCache[key]=shader;
+    shader->ownerDevice=device.Get(); shader->generation=generation; (*m_shaderCache)[key]=shader;
     QkFacadeTrace(vertex?"QK-FACADE compile vs_4_0 cached\n":"QK-FACADE compile ps_4_0 cached\n");
     *out=shader.Detach(); return S_OK;
 }
@@ -337,7 +409,7 @@ HRESULT QkD3D11State::InputLayout(QkFacadeShader *shader,ID3D11InputLayout **out
         HRESULT hr=QK_RT_CALL("state.InputLayout",device->CreateInputLayout(desc.data(),static_cast<UINT>(desc.size()),shader->code->GetBufferPointer(),shader->code->GetBufferSize(),&layout));
         if(FAILED(hr)) {
             ComPtr<ID3D11ShaderReflection> reflection;
-            if(SUCCEEDED(QK_RT_CALL("shader.Reflect",D3DReflect(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection))))) {
+            if(SUCCEEDED(QK_RT_CALL("shader.Reflect",QkReflectShader(shader->code->GetBufferPointer(),shader->code->GetBufferSize(),IID_PPV_ARGS(&reflection))))) {
                 D3D11_SHADER_DESC sd; reflection->GetDesc(&sd);
                 for(UINT n=0;n<sd.InputParameters;++n) {
                     D3D11_SIGNATURE_PARAMETER_DESC param; reflection->GetInputParameterDesc(n,&param);

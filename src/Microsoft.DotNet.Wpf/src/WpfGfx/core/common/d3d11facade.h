@@ -173,6 +173,7 @@ public:
     ComPtr<ID3DBlob> code;
     UINT sampledMask = 0, samplerMask = 0;
     UINT builtinResource = 0;
+    ID3D11Device *ownerDevice = nullptr; // shader COM 对象已持有物理设备。
     std::map<DWORD,ComPtr<ID3D11InputLayout>> layouts;
     ULONGLONG generation = 0;
     ULONG AddRef() { return InterlockedIncrement(&m_refs); }
@@ -226,7 +227,9 @@ class QkD3D11State
     float m_sizeData[4] = {};
     ComPtr<QkFacadeShader> m_boundVS, m_boundPS;
     ComPtr<QkTextureHandle> m_textures[8];
-    std::map<std::string,ComPtr<QkFacadeShader>> m_shaderCache;
+    using ShaderCache = std::map<std::string,ComPtr<QkFacadeShader>>;
+    std::shared_ptr<ShaderCache> m_shaderCache = std::make_shared<ShaderCache>();
+    HANDLE m_capsWake = nullptr; // qkSharedLock 下设置/清理，租约线程独占关闭。
     // 显式 PS 配固定功能 VS 时，VS 源只依赖纹理坐标数量，最多九个条目；布局仍按原 FVF 单独缓存。
     std::map<UINT,ComPtr<QkFacadeShader>> m_fixedVertexShaders;
     struct FixedPair { ComPtr<QkFacadeShader> vs,ps; };
@@ -258,6 +261,7 @@ public:
     UINT width = 0, height = 0;
     static HRESULT Create(HMONITOR monitor, QkD3D11State **out);
     void InvalidateBindings() { m_bindingsValid=false;m_iaValid=false; }
+    void RetainCapsLease();
     HRESULT Initialize();
     ~QkD3D11State();
     // 全部共享设备入口串行；各显示器保留独立上下文状态和原 WPF 包装语义。

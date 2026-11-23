@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <new>
 #include <cmath>
+#include <set>
+#include "quicker-color-disk-cache.inl"
 
 class QkColorGlyphCache
 {
@@ -108,6 +110,7 @@ public:
                 GetTickCount64() - start, result, result == WAIT_OBJECT_0 ? 0u : 1u);
             Log(line);
             // 超时不能强杀系统光栅化或释放仍被使用的对象。工作引用+模块引用负责延迟安全收尾。
+            if (cache->m_disk) cache->m_disk->Stop();
             cache->DropReference();
         }
     }
@@ -117,6 +120,7 @@ public:
         m_threads.reserve(4);
         m_keyBuffer.reserve(128);
         m_origins.reserve(4096);
+        if (!m_worker) { try { m_disk = QkColorDiskCache::Open(); } catch (...) { m_disk.reset(); } }
     }
     static float XPhases()
     {
@@ -141,7 +145,6 @@ public:
     {
         // Keep the idle gate observable even while high-frequency facade scopes are paused.
         QkRtScope rtRun("color.run", m_worker ? "{\"worker\":true}" : "{\"worker\":false}", true);
-        if (!m_worker && PrewarmEnabled()) InterlockedExchange64(&m_lastForeground, static_cast<LONG64>(GetTickCount64()));
         Guard guard(!m_worker);
         prepared.reserve(run.glyphCount);
         const bool initializing = !m_initialized;
@@ -348,6 +351,7 @@ private:
             item.entry.usesForeground ? "true" : "false", item.entry.width, item.entry.height, item.formats);
         return result.substr(0, result.size() - 1) + info;
     }
+#include "quicker-color-disk-bridge.inl"
     HRESULT Get(const DWRITE_GLYPH_RUN &run, DWRITE_MEASURING_MODE mode,
                 float sx, float sy, float phaseX, float phaseY,
                 const D2D1_COLOR_F &foreground, Entry **result, std::vector<Work> &pending,
@@ -400,6 +404,19 @@ private:
                 ++Stats().hits; m_lastHit = true; *result = nullptr;
                 return S_OK;
             }
+        }
+        if (m_disk) {
+            Entry disk = {}; disk.key = key; disk.hash = hash; disk.identity = identity; disk.face = run.fontFace;
+            disk.sx = sx; disk.sy = sy; disk.phaseX = phaseX; disk.phaseY = phaseY; disk.foreground = foreground;
+            if (auto entry = TryDisk(disk)) {
+                QkRtPoint("color.disk.hit", RtDetail(run, mode, sx, sy, phaseX, phaseY, foreground, hash).c_str());
+                ++Stats().hits; m_lastHit = true; *result = entry; return S_OK;
+            }
+        }
+        // 只有真正的前台 miss 才重置空闲门槛；缓存/动画/本批命中不暂停后台。
+        if (!m_worker && PrewarmEnabled()) {
+            InterlockedExchange64(&m_lastForeground, static_cast<LONG64>(GetTickCount64()));
+            QkRtPoint("prewarm.foreground.miss");
         }
         const LONGLONG start = QkFacadeClock();
         const std::string rtDetail = RtDetail(run, mode, sx, sy, phaseX, phaseY, foreground, hash);
@@ -709,6 +726,7 @@ private:
                     if (SUCCEEDED(hr)) hr = pixels->GetStride(&stride);
                     if (SUCCEEDED(hr)) hr = pixels->GetDataPointer(&bytesAvailable, &data);
                     if (SUCCEEDED(hr)) hr = m_scratch->CopyPixels(&crop, stride, bytesAvailable, data);
+                    if (SUCCEEDED(hr)) QueueDisk(item.entry, data, stride);
                     pixels.Reset();
                     if (SUCCEEDED(hr)) hr = CWICWrapperBitmap::Create(bitmap.Get(), &item.entry.bitmap);
                     if (FAILED(hr)) { Fallback("wic-wrap", hr); return S_FALSE; }
@@ -716,21 +734,7 @@ private:
                 item.steps.Add(Copy, copyStart); rtCopy.Stop();
                 QkRtScope rtInsert("color.insert", RtWorkDetail(item).c_str(), true);
                 const LONGLONG insertStart = StepClock();
-                const size_t bytes = static_cast<size_t>(w) * h * 4;
-                while (!m_entries.empty() && (m_entries.size() >= 256 || m_bytes + bytes > 32 * 1024 * 1024))
-                {
-                    m_bytes -= static_cast<size_t>(m_entries.back().width) * m_entries.back().height * 4;
-                    const auto victim = --m_entries.end();
-                    const auto victims = m_index.equal_range(victim->hash);
-                    for (auto it = victims.first; it != victims.second; ++it)
-                        if (it->second == victim) { m_index.erase(it); break; }
-                    if (victim->prewarmed) { --m_warmEntries; m_warmBytes -= static_cast<size_t>(victim->width) * victim->height * 4; }
-                    m_entries.pop_back(); ++Stats().evictions;
-                }
-                m_entries.push_front(std::move(item.entry));
-                try { m_index.emplace(m_entries.front().hash, m_entries.begin()); }
-                catch (...) { m_entries.pop_front(); throw; }
-                m_bytes += bytes; ++Stats().misses;
+                InsertEntry(std::move(item.entry)); ++Stats().misses;
                 const auto &entry = m_entries.front();
                 for (size_t slot : item.slots) prepared[slot].bitmap = entry.bitmap;
                 item.steps.Add(Insert, insertStart); rtInsert.Stop();
@@ -790,7 +794,10 @@ private:
         BOOL sideways = FALSE;
         D2D1_COLOR_F foreground = {};
         size_t next = 0;
+        bool shaped = false;
+        std::vector<UINT16> glyphs;
     };
+#include "quicker-color-warm-shaping.inl"
     static const UINT32 *WarmCodepoints(size_t &count)
     {
         // 100 个单码点，不拆分肤色/ZWJ，不为未映射的码点猜测后备字体。
@@ -855,11 +862,11 @@ private:
     }
     void PrewarmLoop()
     {
-        QkColorGlyphCache generator(true); // 自己的 single-thread factory/context/WIC、reader 和计时。
+        QkColorGlyphCache generator(true); generator.m_disk = m_disk; // 自己的 single-thread factory/context/WIC、reader 和计时。
         UINT64 batches = 0, generated = 0, skipped = 0, pauses = 0;
         LONGLONG totalTicks = 0;
         bool paused = false, exhausted = false;
-        size_t count = 0; const UINT32 *codes = WarmCodepoints(count);
+        bool started = false;
         while (!Stopping())
         {
             if (!Idle())
@@ -875,29 +882,49 @@ private:
                 }
                 WaitForSingleObject(m_wake, 50); continue;
             }
+            if (!started) {
+                started = true; QkRtPoint("prewarm.start");
+                if (FAILED(generator.Initialize())) return;
+            }
             if (paused) QkRtPoint("prewarm.resume");
             paused = false;
             UINT attempted = 0, made = 0, omitted = 0;
             const LONGLONG start = QkFacadeClock();
             for (; attempted < 8 && !Stopping() && Idle(); ++attempted)
             {
-                WarmTarget target; UINT32 code = 0;
+                WarmTarget target; size_t targetIndex = 0;
                 {
                     TryGuard guard;
                     if (!guard.held || Process().cache != this || Stopping()) break;
                     auto it = m_targets.begin();
-                    for (; it != m_targets.end() && it->next >= count; ++it) {}
+                    for (; it != m_targets.end() && it->shaped && it->next >= it->glyphs.size(); ++it) {}
                     if (it == m_targets.end())
                     {
                         // 原子交接：后续登记在同一锁下看到 false，创建新的工作代。
                         // 当前代之后只析构自己的生成器；旧句柄保留，最终释放时一并有界等待。
                         m_running = false; exhausted = true; break;
                     }
-                    target = *it; code = codes[it->next++];
+                    target = *it; targetIndex = static_cast<size_t>(it - m_targets.begin());
+                }
+                if (!target.shaped) {
+                    generator.BuildWarmGlyphs(target); // 分析、shaping 不在共享锁内。
+                    TryGuard guard;
+                    if (!guard.held) continue;
+                    if (Process().cache != this || Stopping()) break;
+                    m_targets[targetIndex].glyphs = std::move(target.glyphs);
+                    m_targets[targetIndex].shaped = true;
+                    continue;
                 }
                 UINT16 glyph = 0;
-                if (FAILED(target.face->GetGlyphIndices(&code, 1, &glyph)) || !glyph) { ++omitted; continue; }
-                if (QkRtEnabled()) { char info[100]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"codepoint\":%u,\"glyph\":%u}", code, glyph); QkRtPoint("prewarm.candidate", info); }
+                {
+                    TryGuard guard;
+                    if (!guard.held) continue;
+                    if (Process().cache != this || Stopping()) break;
+                    auto &stored = m_targets[targetIndex];
+                    if (stored.next >= stored.glyphs.size()) continue;
+                    glyph = stored.glyphs[stored.next++];
+                }
+                if (QkRtEnabled()) { char info[100]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"glyph\":%u}", glyph); QkRtPoint("prewarm.candidate", info); }
                 const FLOAT advance = 0;
                 DWRITE_GLYPH_RUN run = {};
                 run.fontFace = target.face.Get(); run.fontEmSize = target.em; run.glyphCount = 1;
@@ -954,6 +981,10 @@ private:
                     batches, generated, skipped, pauses, attempted, ticks * 1000.0 / frequency.QuadPart,
                     totalTicks * 1000.0 / frequency.QuadPart);
                 Log(line);
+                if (QkRtEnabled()) {
+                    char info[200]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"batch\":%llu,\"generated\":%u,\"skipped\":%u,\"totalGenerated\":%llu}", batches, made, omitted, generated);
+                    QkRtPoint("prewarm.batch", info);
+                }
             }
             if (exhausted) break;
             WaitForSingleObject(m_wake, 25);
@@ -1149,6 +1180,9 @@ private:
     struct Font { Ptr<IDWriteFont> font; Ptr<IDWriteFontFace> face; bool color = false; };
     std::unordered_map<IDWriteFont *, Font> m_fonts;
     std::unordered_map<IDWriteFontFace *, PaintFace> m_paint;
+    // 字体 COM 引用先于 DWrite 模块析构；磁盘线程不持有任何 COM 对象。
+    std::map<IDWriteFontFace *, DiskFont> m_diskFonts;
+    std::shared_ptr<QkColorDiskCache> m_disk;
     std::vector<BYTE> m_keyBuffer;
     std::vector<D2D1_POINT_2F> m_origins;
     std::list<Entry> m_entries;

@@ -411,7 +411,9 @@ HRESULT QkD3D11State::Create(HMONITOR monitor, QkD3D11State **out)
     if(FAILED(hr)) { state->Release(); return hr; }
     for(auto existing:qkSharedStates) {
         if(memcmp(&existing->adapter.AdapterLuid,&state->adapter.AdapterLuid,sizeof(LUID))==0 && SUCCEEDED(existing->DeviceStatus())) {
-            state->device=existing->device; state->context=existing->context; state->featureLevel=existing->featureLevel; break;
+            state->device=existing->device; state->context=existing->context; state->featureLevel=existing->featureLevel; state->m_shaderCache=existing->m_shaderCache;
+            if(existing->m_capsWake) SetEvent(existing->m_capsWake);
+            QkRtPoint("device.physical.reuse"); break;
         }
     }
     if(!state->device) {
@@ -516,10 +518,40 @@ HRESULT QkReadFacadeCaps(HMONITOR monitor, D3DCAPS9 *caps, UINT *memory, LUID *l
     HRESULT hr=QkD3D11State::Create(monitor,&state);
     if(SUCCEEDED(hr)) {
         state->ReadCaps(caps,memory); *luid=state->adapter.AdapterLuid;
-        cached[key]={*caps,*memory,*luid}; state->Release();
+        cached[key]={*caps,*memory,*luid}; state->RetainCapsLease(); state->Release();
         QkFacadeTrace("QK-FACADE caps probe cached per adapter LUID\n");
     }
     ReleaseSRWLockExclusive(&lock); return hr;
+}
+
+// caps 只持有 5 秒租约；首个实际包装在共享锁下复制设备/上下文后唤醒租约线程。
+// D3D11 未使用 SINGLETHREADED；设备可跨线程，immediate context 仍由共享锁串行访问。
+void QkD3D11State::RetainCapsLease()
+{
+    // 已有实际使用者时不再延长其物理设备寿命。
+    for(auto state:qkSharedStates) if(state!=this && state->device.Get()==device.Get()) return;
+    HMODULE module=nullptr;
+    HANDLE wake=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    if(!wake) return;
+    struct Lease { QkD3D11State *state; HMODULE module; HANDLE wake; };
+    auto lease=new(std::nothrow) Lease{this,nullptr,wake};
+    if(!lease || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        reinterpret_cast<LPCWSTR>(&qkSharedOnce),&module)) { delete lease; CloseHandle(wake); return; }
+    lease->module=module; m_capsWake=wake; AddRef();
+    HANDLE thread=CreateThread(nullptr,0,[](void *value)->DWORD {
+        auto lease=static_cast<Lease*>(value);
+        SetThreadDescription(GetCurrentThread(),L"QkCapsLease");
+        WaitForSingleObject(lease->wake,5000);
+        QkD3D11State::EnterShared();
+        lease->state->m_capsWake=nullptr;
+        lease->state->Release();
+        QkD3D11State::LeaveShared();
+        CloseHandle(lease->wake);
+        HMODULE module=lease->module; delete lease;
+        FreeLibraryAndExitThread(module,0);
+    },lease,0,nullptr);
+    if(thread) CloseHandle(thread);
+    else { m_capsWake=nullptr; Release(); CloseHandle(wake); FreeLibrary(module); delete lease; }
 }
 
 HRESULT QkD3D11State::Initialize()
@@ -705,11 +737,11 @@ HRESULT QkD3D11State::SetTexture(DWORD n, QkBaseTextureHandle *p) {
     m_textures[n]=p; return S_OK;
 }
 HRESULT QkD3D11State::SetVertexShader(QkVertexShaderHandle *p) {
-    if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    if(p && p->ownerDevice!=device.Get()) return WGXERR_DISPLAYSTATEINVALID;
     m_boundVS=p; return S_OK;
 }
 HRESULT QkD3D11State::SetPixelShader(QkPixelShaderHandle *p) {
-    if(p && p->generation!=generation) return WGXERR_DISPLAYSTATEINVALID;
+    if(p && p->ownerDevice!=device.Get()) return WGXERR_DISPLAYSTATEINVALID;
     if(p && p->builtinResource) {
         char line[96];StringCchPrintfA(line,96,"QK-FACADE bind builtin PS resource=%u\n",p->builtinResource);QkFacadeTrace(line);
     }
