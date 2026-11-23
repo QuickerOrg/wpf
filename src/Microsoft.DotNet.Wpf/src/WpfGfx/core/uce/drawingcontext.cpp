@@ -11,6 +11,9 @@
 
 #include "precomp.hpp"
 #include "quicker-surface-source.h"
+#if QUICKER_WPF_D3D11_FACADE
+#include "quicker-color-glyphs.inl"
+#endif
 
 DeclareTag(tagTintPushOpacitySurfaces, "MIL", "Tint PushOpacity intermediate surfaces");
 MtDefine(CDrawingContext, MILRender, "CDrawingContext");
@@ -73,6 +76,9 @@ CDrawingContext::CDrawingContext(
     WHEN_DBG_ANALYSIS(m_dbgTargetCoordSpaceId = CoordinateSpaceId::Invalid);
 
     m_pScratchBitmapBrush = NULL;
+#if QUICKER_WPF_D3D11_FACADE
+    m_pColorGlyphCache = nullptr;
+#endif
 
     m_renderedRegionCount = 0;
 
@@ -389,6 +395,9 @@ CDrawingContext::~CDrawingContext()
     Uninitialize();
     ReleaseInterface(m_pComposition);
     ReleaseInterface(m_pScratchBitmapBrush);
+#if QUICKER_WPF_D3D11_FACADE
+    delete m_pColorGlyphCache;
+#endif
 
     delete m_pPreComputeContext;
     delete m_pPrerender3DContext;
@@ -1917,6 +1926,16 @@ CDrawingContext::DrawGlyphRun(
     {
         goto Cleanup;
     }
+
+#if QUICKER_WPF_D3D11_FACADE
+    // 默认关闭：关闭时不改变任何原字形路径和状态。
+    if (QkColorGlyphCache::Enabled() && !IsBounding())
+    {
+        bool drawn = false;
+        IFC(TryDrawColorGlyphRun(pBrush, pGlyphRun, &drawn));
+        if (drawn) goto Cleanup;
+    }
+#endif
 
     if (pGlyphRun->ShouldUseGeometry(&m_contextState.WorldToDevice, m_contextState.GetCurrentOrDefaultDisplaySettings()))
     {

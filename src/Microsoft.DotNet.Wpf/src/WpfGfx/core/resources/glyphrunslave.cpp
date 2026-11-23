@@ -17,6 +17,23 @@
 #include "quicker-glyph-state-trace.h"
 UINT64 QkG0hCompositionFrame(){return static_cast<UINT64>(CComposition::GetFrameLastComposed());}
 
+#if QUICKER_WPF_D3D11_FACADE
+HRESULT CGlyphRunResource::GetColorGlyphRun(DWRITE_GLYPH_RUN *run, DWRITE_MEASURING_MODE *mode)
+{
+    HRESULT hr = CDWriteFontFaceCache::GetFontFace(m_pIDWriteFont, &run->fontFace);
+    if (FAILED(hr)) return hr;
+    run->fontEmSize = m_muSize;
+    run->glyphCount = m_usGlyphCount;
+    run->glyphIndices = m_pGlyphIndices;
+    run->glyphAdvances = m_pGlyphAdvances;
+    run->glyphOffsets = reinterpret_cast<const DWRITE_GLYPH_OFFSET *>(m_pGlyphOffsets);
+    run->isSideways = IsSideways();
+    run->bidiLevel = m_bidiLevel;
+    *mode = m_measuringMethod;
+    return S_OK;
+}
+#endif
+
 MtDefine(CGlyphRunResource, MILRender, "CGlyphRunResource");
 MtDefine(CGlyphRunRealization, CGlyphRunResource, "CGlyphRunRealization");
 

@@ -99,6 +99,14 @@ public:
         __in_ecount(1) const MILCMD_SOLIDCOLORBRUSH* pCmd
         );
 
+#if QUICKER_WPF_D3D11_FACADE
+    HRESULT GetColorGlyphBrush(MilColorF *color, FLOAT *opacity)
+    {
+        *color = *GetColor(&m_data.m_Color, m_data.m_pColorAnimation);
+        return GetOpacity(m_data.m_Opacity, m_data.m_pOpacityAnimation, opacity);
+    }
+#endif
+
     HRESULT RegisterNotifiers(CMilSlaveHandleTable *pHandleTable);
     override void UnRegisterNotifiers();
 

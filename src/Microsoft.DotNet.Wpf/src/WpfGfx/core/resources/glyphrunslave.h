@@ -64,6 +64,11 @@ public:
 
     void Disable();
 
+#if QUICKER_WPF_D3D11_FACADE
+    // 返回完整原始定位；调用方持有并释放 glyphRun.fontFace。
+    HRESULT GetColorGlyphRun(DWRITE_GLYPH_RUN *glyphRun, DWRITE_MEASURING_MODE *mode);
+#endif
+
     void GetBounds(
         __out_ecount(1) CRectF<CoordinateSpace::LocalRendering> * prcBounds,
         __in_ecount(1) CBaseMatrix const * pLocalToDevice

@@ -653,6 +653,10 @@ protected:
     // create a brush but the input only has a bitmap.
     //
     CMILBrushBitmap *m_pScratchBitmapBrush;
+#if QUICKER_WPF_D3D11_FACADE
+    class QkColorGlyphCache *m_pColorGlyphCache;
+    HRESULT TryDrawColorGlyphRun(CMilBrushDuce *brush, CGlyphRunResource *run, bool *drawn);
+#endif
     
     //
     // Regions that have been rendered this frame.
