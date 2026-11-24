@@ -10,6 +10,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <NuGetAudit>false</NuGetAudit>
+    <!-- README 的构建输出位于 ./artifacts，排除以免另一 RID 的生成文件被编译 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**</DefaultItemExcludes>
     <DemoUsePackage Condition="'$(DemoUsePackage)' == ''">true</DemoUsePackage>
     <DefineConstants Condition="'$(DemoUsePackage)' == 'true'">$(DefineConstants);DEMO_PACKAGE</DefineConstants>
   </PropertyGroup>

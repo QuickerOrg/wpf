@@ -22,7 +22,7 @@ dotnet publish -c Release -r win-x64 --self-contained false `
 # ARM64: change RID to win-arm64 and use separate build/output directories.
 ```
 
-默认页面保留渐变、旋转、阴影、半透明和实际模块诊断。Emoji 页面展示 14/28/48 DIP 的单码点、肤色、ZWJ（👩‍❤️‍👨、🧑🏽‍💻、家庭）、彩虹旗与国旗、中英文混排，以及连续的 1→2→1 缩放动画。窗口可调整大小，内容可滚动。窗口不请求激活；普通模式关闭窗口退出，selftest 约六秒自行关闭。
+默认页面保留渐变、旋转、阴影、半透明和实际模块诊断。Emoji 页面展示 14/28/48 DIP 的单码点、肤色、ZWJ（👩‍❤️‍👨、🧑🏽‍💻、家庭）、彩虹旗、中英文混排，以及连续的 1→2→1 缩放动画。窗口可调整大小，内容可滚动。窗口不请求激活；普通模式关闭窗口退出，selftest 约六秒自行关闭。
 
 The default scene retains gradients, rotation, shadows, transparency and diagnostics. The Emoji scene covers the sequences above at 14/28/48 DIP, mixed Chinese/English text, and a repeating 1→2→1 scale animation. Resize and scroll as needed. Selftest windows close themselves after about six seconds.
 

@@ -52,16 +52,17 @@ internal static class Program
             // Main 不触及 WPF；NoInlining 保证 JIT 不提前展开创建 Application 的方法。
             var loadedBefore = GetModuleHandle("wpfgfx_cor3.dll") != 0;
             Environment.SetEnvironmentVariable("QUICKER_WPF_COLOR_GLYPHS", enabled ? "1" : "0");
-            var nativeValue = new StringBuilder(8);
-            _ = GetEnvironmentVariable("QUICKER_WPF_COLOR_GLYPHS", nativeValue, nativeValue.Capacity);
+            var nativeBuffer = new char[8];
+            var nativeLength = GetEnvironmentVariable("QUICKER_WPF_COLOR_GLYPHS", nativeBuffer, nativeBuffer.Length);
+            var nativeValue = nativeLength < nativeBuffer.Length ? new string(nativeBuffer, 0, (int)nativeLength) : "";
             var bootstrap = new JsonObject
             {
                 ["wpfgfxLoadedBeforeSetting"] = loadedBefore,
                 ["wpfgfxLoadedAfterSetting"] = GetModuleHandle("wpfgfx_cor3.dll") != 0,
-                ["nativeEnvironmentValue"] = nativeValue.ToString(),
+                ["nativeEnvironmentValue"] = nativeValue,
                 ["setBeforeWpf"] = !loadedBefore && GetModuleHandle("wpfgfx_cor3.dll") == 0
             };
-            if (!bootstrap["setBeforeWpf"]!.GetValue<bool>() || nativeValue.ToString() != (enabled ? "1" : "0"))
+            if (!bootstrap["setBeforeWpf"]!.GetValue<bool>() || nativeValue != (enabled ? "1" : "0"))
                 throw new InvalidOperationException("Color switch must reach the process environment before WPF loads.");
             return Run(output, emoji, enabled, baseline, bootstrap);
         }
@@ -79,7 +80,7 @@ internal static class Program
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetModuleHandleW")]
     private static extern nint GetModuleHandle(string name);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetEnvironmentVariableW")]
-    private static extern uint GetEnvironmentVariable(string name, StringBuilder value, int size);
+    private static extern uint GetEnvironmentVariable(string name, [Out] char[] value, int size);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Run(string? output, bool emoji, bool color, string? baseline, JsonObject bootstrap)
