@@ -922,7 +922,8 @@ private:
                     if (Process().cache != this || Stopping()) break;
                     auto &stored = m_targets[targetIndex];
                     if (stored.next >= stored.glyphs.size()) continue;
-                    glyph = stored.glyphs[stored.next++];
+                    // 仅工作线程推进游标；锁竞争时保留当前候选，下一批重试。
+                    glyph = stored.glyphs[stored.next];
                 }
                 if (QkRtEnabled()) { char info[100]; StringCchPrintfA(info, ARRAYSIZE(info), "{\"glyph\":%u}", glyph); QkRtPoint("prewarm.candidate", info); }
                 const FLOAT advance = 0;
@@ -935,7 +936,7 @@ private:
                 lookup.key = generator.m_keyBuffer; lookup.foreground = target.foreground;
                 {
                     TryGuard guard;
-                    if (!guard.held) { ++omitted; continue; }
+                    if (!guard.held) { QkRtPoint("prewarm.retry.lookup"); ++omitted; continue; }
                     if (Process().cache != this || Stopping()) break;
                     if (Contains(lookup) || m_entries.size() >= 256 || m_warmEntries >= 64 ||
                         m_bytes >= 32 * 1024 * 1024 || m_warmBytes >= 8 * 1024 * 1024) {
@@ -944,16 +945,23 @@ private:
                             char reason[200]; StringCchPrintfA(reason, ARRAYSIZE(reason), ",\"contains\":%s,\"entries\":%zu,\"warmEntries\":%zu,\"warmBytes\":%zu}", Contains(lookup) ? "true" : "false", m_entries.size(), m_warmEntries, m_warmBytes);
                             QkRtPoint("prewarm.skip", (detail.substr(0, detail.size() - 1) + reason).c_str());
                         }
+                        ++m_targets[targetIndex].next;
                         ++omitted; continue;
                     }
                 }
                 std::vector<Prepared> prepared;
                 if (generator.PrepareGlyphs(run, target.mode, target.sx, target.sy, 0, 0, target.foreground, prepared, 0, false) != S_OK ||
-                    generator.m_entries.empty()) { ++omitted; continue; }
+                    generator.m_entries.empty()) {
+                    TryGuard guard;
+                    if (guard.held && Process().cache == this && !Stopping()) ++m_targets[targetIndex].next;
+                    ++omitted; continue;
+                }
                 auto &entry = generator.m_entries.front();
                 const size_t bytes = static_cast<size_t>(entry.width) * entry.height * 4;
                 {
                     TryGuard guard;
+                    if (guard.held && Process().cache == this && !Stopping()) ++m_targets[targetIndex].next;
+                    else if (!guard.held) QkRtPoint("prewarm.retry.publish");
                     if (guard.held && Process().cache == this && !Stopping() && !Contains(entry) &&
                         m_entries.size() < 256 && m_warmEntries < 64 && m_bytes + bytes <= 32 * 1024 * 1024 &&
                         m_warmBytes + bytes <= 8 * 1024 * 1024)
