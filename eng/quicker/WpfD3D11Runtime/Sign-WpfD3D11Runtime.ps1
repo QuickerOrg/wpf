@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Directory,
-    [string]$QuickerRepository,
+    [string[]]$FileNames,
     [string]$MutexScript = "$PSScriptRoot/tools/RunWithMutex.ps1",
     [string]$SignTool,
     [string]$CertificateThumbprint,
@@ -12,14 +12,15 @@ param(
 $ErrorActionPreference='Stop'
 . ([scriptblock]::Create([IO.File]::ReadAllText("$PSScriptRoot/tools/Payload.Common.ps1")))
 $records=@(); $owned=@()
-foreach($name in Get-WpfNames) {
+if(-not $FileNames) { $FileNames=@(Get-WpfNames) }
+foreach($name in $FileNames) { Assert-Wpf ($name -cin @(Get-WpfNames)) "Unknown signing input: $name" }
+foreach($name in $FileNames) {
     $path=(Get-Item -LiteralPath "$Directory/$name").FullName
     $upstream=$name -in @('PresentationNative_cor3.dll','vcruntime140_cor3.dll','D3DCompiler_47_cor3.dll')
     if(-not $upstream) { $owned+=$path }
 }
 if($Execute) {
     Assert-Wpf ($SignTool -and $CertificateThumbprint -and $TimestampUrl) 'Explicit tool, certificate thumbprint and timestamp URL required.'
-    if($QuickerRepository) { $MutexScript=Join-Path $QuickerRepository 'Tools/Build/RunWithMutex.ps1' }
     Assert-Wpf (Test-Path -LiteralPath $MutexScript -PathType Leaf) 'Mutex script missing.'
     # Reuse Bridge publishing's mutex, signtool arguments and post-sign checks.
     # No certificate creation/import, no implicit certificate selection.
@@ -28,7 +29,7 @@ if($Execute) {
         -CommandPath $SignTool -WorkingDirectory $Directory -TimeoutSeconds 300 -RetryCount 0 -CommandArguments $arguments
     if($LASTEXITCODE) { throw 'WPF signing failed' }
 }
-foreach($name in @(Get-WpfNames)+@('D3DCompiler_47_cor3.dll')) {
+foreach($name in $FileNames) {
     $path=Join-Path $Directory $name
     if(-not (Test-Path -LiteralPath $path)) { continue }
     $sig=Get-AuthenticodeSignature -LiteralPath $path

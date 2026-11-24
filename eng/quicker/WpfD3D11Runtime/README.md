@@ -1,234 +1,141 @@
-# WpfD3D11Runtime
+# WpfD3D11Runtime 生产者
 
-QuickerOrg 维护的第三方 **.NET 10 WPF D3D11 运行时替换包**，不是微软官方产品，也未获微软背书。当前版本 **[10.0.14-d3d11.3 已发布到 nuget.org](https://www.nuget.org/packages/WpfD3D11Runtime/10.0.14-d3d11.3)**；源码位于 [quicker/d3d11-facade](https://github.com/QuickerOrg/wpf/tree/quicker/d3d11-facade)。保留 WPF 上层渲染算法、应用 API 和官方编译引用，替换应用输出中的运行时文件。
+本目录是构建、签名交接和打包的唯一生产者。日常开发使用 QuickerOrg/wpf 的 `quicker/d3d11-facade` 与任务工作树；不再从 VMR/slice 开发，不再调用 Quicker 仓库里的 PKG/PUB1、PUB3、P3 包装或 `sync-wpf-fork.ps1`。消费者包仍为 runtime-only，双 RID 固定为 `win-x64`、`win-arm64`，保留 34/33 个运行时文件、原有 buildTransitive 和消费校验器。
 
-可直接运行的示例见 [WpfD3D11Runtime-Samples](https://github.com/QuickerOrg/WpfD3D11Runtime-Samples)。仅使用包不需要 Visual Studio C++ 工具链或 WPF 源码树。
+统一入口：[`Invoke-WpfD3D11RuntimeProducer.ps1`](Invoke-WpfD3D11RuntimeProducer.ps1)。`Build-*`、`Complete-*`、`Export-*`、`Pack-*`、`Invoke-*Release` 只是此入口的阶段别名，旧 VMR 参数已退役。生产逻辑在 [`tools/producer.py`](tools/producer.py)，不依赖 Quicker 工作区。签名工具 [`Sign-WpfD3D11Runtime.ps1`](Sign-WpfD3D11Runtime.ps1) 只供签名操作员显式调用，不构建、不打包、不发布；默认只列出计划。
 
-## 使用与限制
+## 来源与版本不变量
 
-在 .NET 10 WPF 应用中设置 RID 并添加一条引用：
+- 新构建主来源为 fork `HEAD`、`HEAD^{tree}`、`HEAD:src`，分别记录为 `forkCommit`、`forkRootTree`、`runtimeSrcTree`。项目路径是 `src/...`。
+- `baselineProvenance` 是可省略或设为 `null` 的独立历史说明；默认是 VMR `v10.0.114`、`0427b9abbead3fa64c6655eb4290c537397131fa`、WPF 子树 `664f60538e7fbbc978dcd8984f3e9a023906e5de`。不会为填此字段访问 VMR，也不将其冒充 fork commit。
+- 构建前拒绝 producer 目录以外的工作区变化；本地 producer 修改记录 `producerDirty` 和逐文件 SHA。只有干净提交来源才可能成为可发布候选，未提交演练的 `releaseReady` 始终为 false。构建与打包阶段分别保留 producer 哈希；修改打包逻辑不伪造已完成构建的 producer 身份。
+- 包版本为 `10.0.P-d3d11.N`，须与 `eng/Versions.props` 基线相同；新文件 FileVersion 为 `10.1.floor(N/65536).(N%65536)`，AssemblyVersion 为 `10.0.0.0`，新 informational version 带真实 fork commit。沿用文件绝不重标版本或重签。
+- 增量清单使用精确包路径。每项 `production.action` 为 `rebuilt` 或 `preserved`；沿用项包含基准包名、SHA、原 manifest 原始字节 SHA 和完整 `originalRecord`，旧来源链不会被新 fork 来源覆盖。上游原件在全量模式标为 `upstream-copy`。
+- 输出不得放在源码树内。外置 `Directory.Build.props/targets` 仅 Import fork 原文件，并显式设置 `RepoRoot`、`ArtifactsDir`、`ArtifactsObjDir`；不创建 junction，不写树内 obj/bin。
 
-```xml
-<PropertyGroup>
-  <RuntimeIdentifier>win-x64</RuntimeIdentifier> <!-- 或 win-arm64 -->
-</PropertyGroup>
-<ItemGroup>
-  <PackageReference Include="WpfD3D11Runtime" Version="[10.0.14-d3d11.3]" />
-</ItemGroup>
-```
+## 工具与配置
 
-- 支持 Windows `win-x64` / `win-arm64`、框架依赖（FDD）和自包含（SC）构建/发布；FDD 仍需要匹配架构的 .NET 10 Windows Desktop Runtime。示例将运行时要求设为 `10.0.14`。
-- 不支持 x86、无 RID、非 .NET 10 WPF、裁剪、单文件、AOT，以及消费端 `PublishReadyToRun` / `PublishReadyToRunComposite`。必须生成 deps.json。
-- 编译和 XAML 编译继续使用官方 targeting pack；本包不提供 ref 程序集或 WPF 编译任务，也不替换 CoreCLR 或整个 WinForms 框架。
-- 消费者构建调用 Windows PowerShell 5.1 校验器（默认 `powershell.exe`，可用 `WpfD3D11RuntimePowerShell` 指定兼容宿主）。包消费已用 SDK 10.0.403 验证；其他 SDK/Visual Studio 构建组合需重新验证。
-- ARM64 使用系统 `D3DCompiler_47.dll`，不从 System32 复制或随包分发；x64 携带 `D3DCompiler_47_cor3.dll`。
-- 包内 WPF 基线锁定 **10.0.14**。共享框架补丁不会自动更新这些文件；维护者需显式升级包并重新验证应用。
-- 后端在编译时确定，不能通过环境变量切回官方 D3D9。回退时移除包引用，使用干净输出重新构建、完整部署官方运行时版本并重启进程。
-- 已知部分 Qualcomm GPU 有纹理采样截断差异。不保证所有 GPU、效果、设备恢复或未来补丁组合均逐像素一致；根 README 的验证有其设备与样本范围，不代表完整 WPF API/GPU 认证。
+需要 Python 3.11+（生产者只用标准库）、Windows PowerShell 5.1、已安装的 .NET 10 SDK、VS 18 MSBuild/C++/CLI、MSVC 14.44.35207、redist 14.44.35112 和 Windows SDK。所有工具路径、版本和缓存均可在 JSON 覆盖；缺失时 Validate 给出具体字段和路径，不安装/更新工具。
 
-## 版本规则
-
-| 标识 | 规则与当前值 |
+| 配置项 | 默认值 / 约束 |
 | --- | --- |
-| NuGet 包版本 | 上游服务基线加门面序号：`10.0.14-d3d11.N`；当前 `N=3` |
-| 自建 FileVersion | 当前序列使用 `10.1.0.N`，本版 `10.1.0.3`；这是本项目版本域，不代表微软发布了 .NET 10.1 |
-| AssemblyVersion | 保持 `10.0.0.0` |
-| InformationalVersion | 构建脚本记录基线、私有序号和 fork commit；以包内逐文件 manifest 和真实文件为准 |
+| `sourceRoot` | 当前入口所在的 fork 工作树根 |
+| `outputRoot` | `G:/WpfD3D11Runtime/_build/runtime`；每次任务使用新目录，必须在 Git 工作树外 |
+| `mode` | `full` 或 `incremental`；默认 full |
+| `packageVersion` | 必填，无默认 |
+| `basePackage` / `basePackageSha256` | 增量模式必填，绝对路径和显式 SHA256 锁 |
+| `rebuildFiles` | 增量模式必填，精确包内路径数组；全量模式自动覆盖全部 fork 文件 |
+| `msbuild` | VS 18 Community 的 `MSBuild/Current/Bin/MSBuild.exe` |
+| `vcToolsVersion` / `vcToolsRedistVersion` | `14.44.35207` / `14.44.35112` |
+| `windowsSdkBin` | Windows Kits 10 `bin/10.0.26100.0/x64`；必须包含 rc.exe，仅加入子进程 PATH |
+| `nugetPackagesDirectory` | `G:/WpfD3D11Runtime/tools/packages`，绝对缓存路径 |
+| `compilerToolsetVersion` | `10.0.112`；缓存内需有 `microsoft.net.sdk.compilers.toolset/<版本>/csc.exe`，显式传 RoslynTargetsPath |
+| `perlCommand` | `G:/WpfD3D11Runtime/tools/strawberry-perl/5.38.0.1/portableshell.bat`；不从 slice 推导 |
+| `restoreSource` | 默认空，用空本地 feed + 已有缓存；仅允许显式设为 `https://api.nuget.org/v3/index.json` |
+| `crossgen2` | `G:/WpfD3D11Runtime/tools/crossgen2/10.0.14/crossgen2.exe`，托管重建/全量模式必需，保留同目录运行依赖 |
+| `referenceDirectories` | 每 RID 的 `G:/WpfD3D11Runtime/tools/references/<rid>`；托管重建/全量必需，含 System.Private.CoreLib.dll 及完整同架构引用图 |
+| `x64Compiler` | `G:/WpfD3D11Runtime/tools/D3DCompiler_47_cor3.dll`，全量必需，SHA 锁为 PKG0 的官方 10.0.11 原件 |
+| `metadata` / `packageReadme` | 全量必填；metadata 至少含 authors、description、projectUrl、tags、releaseNotes。增量继承基准元数据并更新生产来源说明；发布新版本时应在配置中提供人工撰写的 `metadata.releaseNotes` 与 `packageReadme`，它们会覆盖自动生成的来源说明 |
+| `equivalenceReport` | 全量 Prepare 必需；`unexpectedDifferences=false`，files 精确覆盖新文件，每项含 pathInPackage、newSha256；报告必须锁定实际产物 |
+| `inputRoot` | 默认 outputRoot；签后 Prepare 指向未签构建目录，读取其 build-receipt 与 rebuilt |
+| `signerThumbprint` / `timestampThumbprint` | 默认沿用现有发布者及 RFC3161 时间戳证书指纹；换证时必须显式修改并重新审查 |
+| `nativeSourcePrefix` | 默认空；可显式开启 MSVC `/experimental:deterministic /pathmap`，只控制诊断路径，不承诺所有输出可重现 |
+| `nativeTrimPrefix` / `nativePdbAltPaths` | 默认空；受控等价实验可裁诊断前缀、按 RID 指定 PDBALTPATH。与 nativeSourcePrefix 互斥；不改源码与 manifest 主来源 |
 
-脚本完整 FileVersion 算法为 `10.1.floor(N/65536).(N%65536)`；`N` 必须为正整数。上游原字节二进制保留各自版本与签名。公开包 `.3` 的 `publicRepositoryCommit` 和 nuspec repository 指向包含门面优化的源码快照 `6079ac76740cba2b589fbe7616c2c063a6d827f1`；manifest 的原始 `forkCommit` 及内嵌 InformationalVersion 仍保留构建时基线与优化补丁信息。两类来源字段含义不同，后续文档提交也不等于原二进制内嵌版本。
+缓存由操作员事先准备；恢复缺包时仅允许 nuget.org。入口禁用子进程 dotnet 工作负载更新通知、遥测、首次体验与 NuGet audit，不运行 Arcade bootstrap、不写系统或全局环境。工具缓存可持久复用；任务 obj、bin、temp、HTTP cache 均在 outputRoot。Perl 可以从受信任的已验证工具包复制到公共工具缓存；不依赖旧源码检出。
 
-## 包结构与 buildTransitive
+增量配置示例（SHA 替换为实际基准包 SHA）：
 
-```text
-runtimes/win-x64/lib/net10.0/      # 29 个运行时程序集
-runtimes/win-x64/native/          # 5 个原生文件，含 x64 compiler
-runtimes/win-arm64/lib/net10.0/    # 29 个运行时程序集
-runtimes/win-arm64/native/        # 4 个原生文件，无 OS compiler
-buildTransitive/                 # props、targets、每 RID 的精确资产声明
-manifests/win-{x64,arm64}.json    # 来源、版本、架构、哈希、R2R 与签名记录
-tools/                          # 消费者输入/输出校验器
-README.md, LICENSE.txt, THIRD-PARTY-NOTICES.txt, licenses/
+```json
+{
+  "sourceRoot": "G:/WpfD3D11Runtime/worktrees/my-task",
+  "outputRoot": "G:/WpfD3D11Runtime/_build/my-task/unsigned",
+  "mode": "incremental",
+  "packageVersion": "10.0.14-d3d11.5",
+  "basePackage": "G:/WpfD3D11Runtime/packages/WpfD3D11Runtime.10.0.14-d3d11.4.nupkg",
+  "basePackageSha256": "<64位SHA256>",
+  "rebuildFiles": [
+    "runtimes/win-x64/native/wpfgfx_cor3.dll",
+    "runtimes/win-arm64/native/wpfgfx_cor3.dll"
+  ]
+}
 ```
 
-本包是 runtime-only 包，没有顶层 `lib/` 或 `ref/`，不会改变应用编译引用。`buildTransitive` 从包自身位置定位文件：
+全量模式改为 `mode=full`，不需要基准包或重建清单；提供双 RID references、crossgen2、x64Compiler、公开 packageReadme 与 metadata。Build 构建完整生产依赖图并为 28 个纯托管库/RID 执行 R2R；DirectWriteForwarder 和原生文件单独处理。Prepare 前审阅并提供哈希锁定的等价报告。上游二进制继续保留原字节与许可，不将其当 fork 自建。
 
-1. `ResolveReferences` 前验证 RID、目标框架、发布选项及精确输入集合。
-2. 在 SDK 的 Build/Publish 冲突处理之后恢复 manifest 所属运行时资产，移除对应同名 RuntimePackAsset，并参与生成最终 deps.json；不关闭 SDK 的重复文件检查。
-3. Build/Publish 完成后核对实际输出、deps 声明、PE 架构/版本和 SHA256；FDD 拒绝混入 coreclr/hostfxr/hostpolicy。失败会使构建失败。
-4. 向输出复制 `licenses/WpfD3D11Runtime/`，包含 README、许可、notices 和当前 RID manifest。默认不复制验证脚本；诊断时可设 `WpfD3D11CopyVerifier=true`。
+## 日常任务流程
 
-无需手动覆盖 DLL 或修改 deps.json。包版和官方版应使用各自全新的 artifacts/publish 目录；切换开关不会卸载旧目录中的文件。
-
-## 许可与第三方 notices
-
-WPF fork 源码采用 [MIT 许可](LICENSE.txt)。**已发布的 nupkg** 根目录保留 `LICENSE.txt`、`THIRD-PARTY-NOTICES.txt`，`licenses/` 包含上游完整声明、PresentationNative 的 `DNCENG-*` 文本和 `WINDOWSDESKTOP-LICENSE.txt`。这些通知也随应用输出携带；逐文件来源见 `manifests/`。MIT 不替代第三方组件各自适用的条款。
-
-本源码目录也保留 [上游 notices](licenses/UPSTREAM-THIRD-PARTY-NOTICES.txt)、[PresentationNative 许可](licenses/DNCENG-LICENSE.txt) 和 [WindowsDesktop 许可](licenses/WINDOWSDESKTOP-LICENSE.txt)。本目录的部分历史声明及打包脚本生成的描述仍保留早期本地验证措辞，和已发布包的文本不同；核对公开 `.3` 分发内容时，以 nuget.org 下载包及其中许可/manifest 为准。本说明不把历史脚本输出自动视为新的公开发行版。
-
-## 从源码构建
-
-以下区分公开 fork 的开发构建入口与已用于产包的构建环境。源码流程依据既有构建记录和当前脚本整理；**公开 fork 全新机器上的独立构建及完整产包流程均未验证**。示例的 nuget.org 消费已单独验证。
-
-### 前提与已知工具链
-
-| 项目 | 记录和源码能确认的要求 |
-| --- | --- |
-| 操作系统 / VS | 已有运行时构建记录使用 Windows、VS/MSBuild **18 Community**；脚本默认指向该版 MSBuild。上游指南写 VS 2022，但用 VS 2022 完整产包未验证；VS 18 的最低小版本也未验证 |
-| 工作负载 | 安装“.NET 桌面开发”和“使用 C++ 的桌面开发”，含 MSBuild、C++/CLI、ATL/MFC、.NET Framework 4.7.2 targeting pack 等；参考上游 [组件清单](../../../Documentation/wpf.vsconfig)，该旧清单不能代替下列实际 SDK/工具集版本 |
-| C++ | `v143`；producer 固定 `VCToolsVersion=14.44.35207`、`VCToolsRedistVersion=14.44.35112`。需装所构建架构的编译器/库（ARM64 还需对应 C++/CLI、ATL/MFC 组件）；其他版本未验证 |
-| Windows SDK | 当前 [Wpf.Cpp.props](../../WpfArcadeSdk/tools/Wpf.Cpp.props) 固定 `10.0.26100.0`，不是旧组件清单中的 19041 |
-| .NET SDK | 已有包构建/消费记录用 **10.0.403**。本 fork 的 [global.json](../../../global.json) 请求 `10.0.112` 并允许 `latestFeature`；示例另有隔离配置。更换 SDK 必须复验 |
-| PowerShell | 编译入口 `Build-*`、完成/R2R 入口 `Complete-*` 要求 **PowerShell 7**；签名、打包、bundle 导出/处理和消费者验证兼容 **Windows PowerShell 5.1**，已有真实 5.1 打包记录 |
-| 产包额外输入 | 相同源码快照的双架构完整 IL、相应架构非 WPF 自包含引用集、10.0.14 crossgen2、逐文件等价性报告，以及辅助脚本所在的 Quicker 工作区；本 fork 不会自动下载/生成这些输入 |
-
-仅安装 .NET SDK 不足以构建 WPF 原生和 C++/CLI 部分。上游 [开发指南](../../../Documentation/developer-guide.md) 可作组件背景参考，本文实际版本约束优先。
-
-### 获取源码与公开 fork 的入口
+1. 从常驻克隆建任务工作树；只在任务树改文件。常驻目录不是输出目录，不使用旧双树同步。
 
 ```powershell
-git clone --branch quicker/d3d11-facade https://github.com/QuickerOrg/wpf.git
-cd wpf
+git -C G:/WpfD3D11Runtime/wpf worktree add -b quicker/my-task G:/WpfD3D11Runtime/worktrees/my-task quicker/d3d11-facade
+$entry = 'G:/WpfD3D11Runtime/worktrees/my-task/eng/quicker/WpfD3D11Runtime/Invoke-WpfD3D11RuntimeProducer.ps1'
+$config = 'G:/WpfD3D11Runtime/_build/my-task/unsigned.json'
+& $entry -ConfigurationFile $config -Phase Build -WhatIf
+& $entry -ConfigurationFile $config -Phase Build
 ```
 
-本仓库是 **dotnet/wpf 布局**，根目录就是 WPF 项目；实际发布二进制的构建使用 **dotnet/dotnet VMR 的 `src/wpf` 切片**。VMR 基线记录为 `0427b9ab`，source-manifest 中上游 WPF 基线为 `4726a1a9`；VMR 服务补丁快照与直接检出的该上游 WPF 提交仍有差别。公开 fork 先对齐切片快照，再重放门面修改；不能只检出上游 `4726a1a9` 就认定输入一致。
+`-WhatIf` 只解析配置、核对来源/工具/项目/基准，不创建输出或调用 MSBuild；所有阶段均支持同样的前置演练。Build 不签名、不打包。版本序号在重建前明确决定。
 
-外部读者若只是修改/研究 WPF，可从本 fork 的 [build.cmd](../../../build.cmd) / [eng/common/Build.ps1](../../common/Build.ps1) 开始。下列参数与当前入口相符，但**本门面分支的独立仓库全新构建尚未实测**，也不等于构造可打包的私有版本：
+2. 检查双 RID 日志、PE/版本/R2R 与等价证据。Prepare 未签候选时须逐次显式传 `-RequireSigned:$false`；默认 true 不会自动降级。
 
 ```powershell
-# 在 Windows PowerShell / PowerShell 中设置，勿在 Git Bash 中设置 CL。
-$env:CL = '/utf-8'
-./build.cmd -configuration Release -platform x64 -msbuildEngine vs `
-  /p:WpfD3D11Facade=true /p:VCToolsVersion=14.44.35207 /p:VCToolsRedistVersion=14.44.35112
+& $entry -ConfigurationFile $config -Phase Prepare -RequireSigned:$false
+& $entry -ConfigurationFile $config -Phase ExportSigningBundle -RequireSigned:$false
 ```
 
-`build.cmd` 自带 `-restore -build`。新的构建变体必须 restore，不能复用另一变体的 obj；直接调用 MSBuild 则需显式 `-restore`。`CL=/utf-8` 避免原生源码编码问题。此入口可能还原上游配置的依赖源，不是仅依赖 nuget.org 的离线产包命令。不要把普通开发输出的 `42.*` 版本交给运行时打包器。
+签名 ZIP 包含已锁定文件、逐项哈希、`signFiles`/`preserveFiles` 和 signing 目录工具。记录 ZIP SHA，传到签名机，解压后用 `signing/tools/SigningBundle.Common.ps1` 的 `Test-WpfSigningBundle` 验证 SHA、精确文件集、无 reparse point、签名角色和原消费门禁。只把 signFiles 复制到新的签名输出目录，保留包内相对路径；不要原地改已锁定 bundle，更不要重签 preserveFiles。
 
-### 使用现有 producer 构建运行时
+签名操作员按 RID、native/lib 目录向 bundle 内 `Sign-WpfD3D11Runtime.ps1` 传 `-Directory`、精确 `-FileNames`、显式 SignTool/CertificateThumbprint/TimestampUrl，再明确 `-Execute`。它使用随包 mutex、sha256/RFC3161 和签后验证；不选择隐式证书、不创建或导入证书。未执行 Execute 时只列计划。此步骤需要单独签名授权，生产者本身不隐式调用签名器。
 
-[Build-WpfD3D11Runtime.ps1](Build-WpfD3D11Runtime.ps1) **目前依赖 VMR 布局，不能直接在独立 fork 中运行**：从脚本位置上溯到 WPF 根，再上溯两级认作 VMR 根，读取 `HEAD:src/wpf` 与 `src/source-manifest.json`。它还比较 VMR 的 WPF 树与 `-ForkRepository` 的树，排除不参与运行时构建的 `eng/quicker/`、`samples/` 和根 `README.md`；其余文件必须逐一相同，否则拒绝构建。
-
-要复用这条有历史构建记录的路线，需另备 [dotnet/dotnet VMR](https://github.com/dotnet/dotnet) 工作区，将与 fork 一致的 WPF 源码快照放到 `src/wpf` 并提交、记录真实来源，保留 VMR 构建基础设施。只把文件放进名叫 `src/wpf` 的空目录不够。**从公开基线在外部机器完整重建环境未验证**；本仓库未提供一键导入 VMR、准备全部依赖或生成等价性报告的公共入口。
-
-参数与限制：
-
-- 必填 `-Architecture x64|ARM64`、`-OutputRoot`、`-QuickerRepository`、`-ReferenceDirectory`；后三者必须为绝对路径。`OutputRoot` 必须全新且不存在，每架构单独设置。
-- 显式传 `-ForkRepository`、`-MSBuild`、`-Crossgen2`、`-NuGetPackagesDirectory`，不要依赖脚本内的构建机默认路径。`PrivateReleaseSequence` 默认 **1**，重建本版应明确传 **3**；包版本由 `eng/Versions.props` 的基线加序号生成。
-- NuGet 缓存由 `-NuGetPackagesDirectory` 指定（绝对路径，必须已存在），脚本据此设置 `NUGET_PACKAGES`；调用前设置的环境变量 `NUGET_PACKAGES` 会被它覆盖。脚本把 `RestoreSources` 指向新建空 feed 并关闭在线 feeds，所以这是**离线还原**：该目录必须事先包含构建所需的全部包（可先用联网的普通构建预热同一目录）。默认值是维护者构建机路径，外部构建必须显式传参。
-- C++/CLI 中间项目需继承源码树 targets：obj 在 WPF 根下独立的 `artifacts-p2-<OutputRoot末段>/obj/`，bin/log 在 `OutputRoot`。不同构建使用不同末段名称，不能仅更换父目录后重用旧 obj。
-- 内部已有 `-restore`、`CL=/utf-8`、Release 门面开关、私有版本适配及 net472 PresentationBuildTasks 先行 restore，一次 MSBuild 会话构建完整运行时图。脚本关闭三类 API compat 检查，不能把构建成功说成已通过 API compat。
-- `-BuildOnly` 在完整 33 文件 IL 投影及版本校验后停止；不加它必须提供有效 `-EquivalenceReport`。`-ResumeFailedBuild` 只用于同一源码提交/架构的失败恢复。
-
-下面是**已备齐上述 VMR、缓存与辅助输入之后**的参数模板，不是克隆本 fork 后即可执行的命令。路径为示例，须换成自己的绝对路径：
+3. 签后建立新的配置：`outputRoot` 指向新 signed 目录，`inputRoot` 指向未签构建目录；其余来源、基准包、版本、重建清单保持一致。
 
 ```powershell
-$vmr = 'C:/src/dotnet-vmr'
-$fork = 'C:/src/wpf'
-$quicker = 'C:/src/Quicker'  # 须包含下文所列辅助脚本
-$producer = "$vmr/src/wpf/eng/quicker/WpfD3D11Runtime"
-$msbuild = 'C:/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe'
-$crossgen2 = 'C:/tools/crossgen2-10.0.14/crossgen2.exe'
-
-pwsh -NoProfile -File "$producer/Build-WpfD3D11Runtime.ps1" `
-  -Architecture x64 -OutputRoot C:/build/wpf-x64-new `
-  -QuickerRepository $quicker -ReferenceDirectory C:/inputs/references-x64 `
-  -ForkRepository $fork -MSBuild $msbuild -Crossgen2 $crossgen2 `
-  -NuGetPackagesDirectory C:/build/nuget-packages `
-  -PrivateReleaseSequence 3 -BuildOnly
+$signedConfig = 'G:/WpfD3D11Runtime/_build/my-task/signed.json'
+& $entry -ConfigurationFile $signedConfig -Phase Prepare -SignedPayloadRoot 'G:/WpfD3D11Runtime/_build/my-task/signed-payload'
+& $entry -ConfigurationFile $signedConfig -Phase Pack
+& $entry -ConfigurationFile $signedConfig -Phase Check
 ```
 
-ARM64 使用 `-Architecture ARM64`、新的 `OutputRoot` 和相应架构引用目录。当前 pack 需要两个架构，只有 x64 输出不足。
+Pack 已自动 Check；独立 Check 每次自动创建新的校验目录，不覆盖既有包与 staging。Prepare 的签后输入只能改变 PE checksum、Security Directory 与文件尾证书；所有代码/资源必须等于锁定未签构建。签后从实际 PE/签名重新生成记录，不手改 passed。默认 RequireSigned 验证每个 fork 文件的实际签名、发布者/时间戳与记录，并检查全部沿用/上游文件 Valid 与时间戳；未签新 DLL 必须拒绝。
 
-### R2R 与可选签名
+Pack 使用隔离 SDK 项目、空包源，顺序为 restore → pack --no-build --no-restore → 解包校验。Check 覆盖 CRC、无重名/无额外资产、精确 67 文件、SHA、实际 PE 架构/AssemblyVersion/FileVersion/imports/R2R、manifest 来源分类、版本资产声明、nuspec 公开字段、README、原许可/消费者逻辑与增量沿用字节。保留原 `Test-WpfInput`，不修改消费者校验器或关闭 RequireSigned。没有 nupkg 作者签名；这不替代负载 Authenticode。
 
-[Complete-WpfD3D11Runtime.ps1](Complete-WpfD3D11Runtime.ps1) 读取 `build-receipt.json` 和等价性报告，检查报告含 `unexpectedDifferences=false`、精确 33 文件集合及每项 `newSha256` 与本次 IL 相符。报告应来自实际构建差异审核，不能用空布尔标志代替。
+4. 在全新缓存、本地目录源消费精确版本，双 RID 执行 FDD build/publish，保留 Input/Build/Publish 三道原门禁和 deps/哈希结果；按改动面执行运行验证。不能把静态包检查当 GPU/ARM 运行验证。签前干跑可另外显式 Pack -RequireSigned:$false，但该包 `requireSignedPassed=false`、`releaseReady=false`，只能用于本地演练。
 
-它调用 `QuickerRepository/Experiments/WpfRenderBackend/new-r2r-overlay.ps1`，还依赖同目录 `overlay-common.ps1`；这些辅助脚本不在本公开 fork 中。引用集先取同架构非 WPF 自包含 DLL，再以本次 WPF IL 覆盖，避免混用旧 WPF。已用 crossgen2 **10.0.14** 对每 RID **28 个程序集**独立 R2R；`DirectWriteForwarder.dll` 和 native 只复制。完成入口要求 `references/`、`r2r/` 尚不存在。
+5. 审查并另行授权提交/推送任务改动，整合到 quicker/d3d11-facade 后，从最终干净提交重建发布候选。发布前复核 nupkg SHA、许可、签名、消费验证与版本；release 资产使用这个预制包。main 负责 `.github/workflows/publish-nuget.yml`，不是普通上游镜像，也不在云端重新编译运行时；以 release_tag、package_version、package_sha256 输入，经资产校验和 Trusted Publishing 发布。创建 release、上传资产、workflow dispatch、NuGet push 都不是本入口的隐式副作用，需要单独授权。
+
+## 上游升级：逐版本核对完整树
+
+不得只凭 source-manifest 的 wpf commit 认定快照相同。当前 dotnet/wpf v10.0.14 根树 `6c0c3cfa7865602595a995fdb51ad6be52509cd9` 与 VMR 0427b9ab 的 WPF 子树不同，fork 的纯基线导入提交 `f57a2327335725d33799d5978c39b610214b3865` 根树才等于 `664f60538e7fbbc978dcd8984f3e9a023906e5de`；差异包含服务/安全修复。
+
+每次升级先核实 WPF tag、SDK/VMR tag，GitHub 只读 fetch，并比较整个根树（不是只比 src）：
 
 ```powershell
-pwsh -NoProfile -File "$producer/Complete-WpfD3D11Runtime.ps1" `
-  -OutputRoot C:/build/wpf-x64-new -QuickerRepository $quicker `
-  -ReferenceDirectory C:/inputs/references-x64 `
-  -EquivalenceReport C:/inputs/equivalence-x64.json -Crossgen2 $crossgen2
+# 标签均为占位，必须先核实；此处没有执行网络或升级。
+git -C G:/WpfD3D11Runtime/wpf fetch --filter=blob:none --no-tags https://github.com/dotnet/wpf.git refs/tags/<WPF标签>
+git -C G:/WpfD3D11Runtime/wpf rev-parse 'FETCH_HEAD^{tree}'
+# 与对应 VMR 的 <VMR提交>:src/wpf 树比较，记录 tag/commit/tree/source-manifest。
 ```
 
-上例默认只记录 `unsigned/dryrun`，适合本地验证。可选真实签名在 R2R 与头/身份检查之后执行：向 Build/Complete 显式提供 `-ExecuteSigning` 及签名工具、证书标识、时间戳服务参数。签名还需互斥辅助脚本（通过 `QuickerRepository/Tools/Build/RunWithMutex.ps1`，或给 [Sign-WpfD3D11Runtime.ps1](Sign-WpfD3D11Runtime.ps1) 明确 `-MutexScript`）。上游 PresentationNative、VC redist 和 compiler 保留原字节/签名，不重新签名。
-
-`-RequireSigned` 是 **Pack 的校验开关，不执行签名**：拒绝 fork 自建文件的 unsigned/dryrun，要求实际有效签名、时间戳及记录/指纹/哈希一致。未签名本地验证可不传；公开 `.3` 已通过 RequireSigned 路线准备。顺序为：编译/版本 → 差异审核 → R2R → 签名 → 最终哈希/manifest → pack。
-
-### 打包并在 demo 中验证本地 feed
-
-[Pack-WpfD3D11Runtime.ps1](Pack-WpfD3D11Runtime.ps1) 不做源码构建，接受双架构最终 `r2r/` 和 `overlay-manifest.json`，按精确清单投影 33 文件，x64 另加 compiler。compiler 必须来自官方 WindowsDesktop x64 **10.0.11** 缓存的 `D3DCompiler_47_cor3.dll`，SHA256 必须为 `A05F99734F7C4822FEFC12B367AF21FD0976ED6608752FB1E1E80B6ECE7ECBBB`，不能随意替换同名文件。
-
-准备绝对路径 `NuGetConfig`，例如以下无网络源配置；生成的 pack 项目无包依赖，本机仍需可用 .NET 10 SDK：
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources><clear /></packageSources>
-  <fallbackPackageFolders><clear /></fallbackPackageFolders>
-</configuration>
-```
-
-使用全新 staging、独立 artifacts/feed。在前述 PowerShell 会话中执行（双架构已完成），显式传来源，避免在非 VMR 工作区默认读取 `HEAD:src/wpf`：
+相同则直接使用真实 dotnet/wpf commit；不同时在 `G:/WpfD3D11Runtime/vmr-import` 建只读、浅层稀疏导入，不在那里开发或构建：
 
 ```powershell
-$sliceCommit = (git -C $vmr rev-parse HEAD).Trim()
-$wpfTree = (git -C $vmr rev-parse HEAD:src/wpf).Trim()
-powershell.exe -NoProfile -File "$producer/Pack-WpfD3D11Runtime.ps1" `
-  -X64InputDirectory C:/build/wpf-x64-new/r2r `
-  -X64Manifest C:/build/wpf-x64-new/r2r/overlay-manifest.json `
-  -Arm64InputDirectory C:/build/wpf-arm64-new/r2r `
-  -Arm64Manifest C:/build/wpf-arm64-new/r2r/overlay-manifest.json `
-  -X64Compiler C:/inputs/D3DCompiler_47_cor3.dll `
-  -StagingDirectory C:/build/wpf-pack-staging-new `
-  -ArtifactsPath C:/build/wpf-pack-artifacts-new -FeedDirectory C:/build/wpf-local-feed `
-  -NuGetConfig C:/inputs/nuget-offline.config `
-  -SourceSliceCommit $sliceCommit -SourceWpfTree $wpfTree
+git clone --filter=blob:none --no-checkout --depth=1 --single-branch --branch <SDK标签> https://github.com/dotnet/dotnet.git G:/WpfD3D11Runtime/vmr-import
+git -C G:/WpfD3D11Runtime/vmr-import sparse-checkout init --no-cone
+git -C G:/WpfD3D11Runtime/vmr-import sparse-checkout set --no-cone /src/wpf/ /src/source-manifest.json
+git -C G:/WpfD3D11Runtime/vmr-import checkout <SDK标签>
+git -C G:/WpfD3D11Runtime/vmr-import rev-parse 'HEAD:src/wpf'
+# 后续标签：
+git -C G:/WpfD3D11Runtime/vmr-import fetch --filter=blob:none --depth=1 --no-tags origin <新SDK标签>
 ```
 
-输入已真实签名可追加 `-RequireSigned`，未签名输入加此开关会失败。双架构 manifest 的版本和 fork commit 必须一致。脚本仍保留历史本地包描述/标记，生成的是供自己验证的本地 feed 包；不会发布到 nuget.org，也不是公开 `.3` 元数据的重现流程。
+只查询树/清单时保持 no-checkout；需要导入快照才 materialize。维护纯上游快照线，保留来源证明；在新的 fork 任务树整合私有提交并处理冲突，保留 eng/quicker 和 fork 自有文档。更新 baselineProvenance、精确依赖/版本后，重新做全量构建、R2R、等价、签名、包门禁与消费验收。不能把当前树证明外推到今后版本。
 
-验证时复制示例 nuget.config 到自己的工作目录并改成如下内容：将 `WpfD3D11Runtime` 只映射到本地源，`Microsoft.*` 保留在 nuget.org，不让两个源同时提供同一包标识：
+## 已验证与边界
 
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-    <clear />
-    <add key="local-wpf" value="C:/build/wpf-local-feed" />
-    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-  </packageSources>
-  <packageSourceMapping>
-    <clear />
-    <packageSource key="local-wpf"><package pattern="WpfD3D11Runtime" /></packageSource>
-    <packageSource key="nuget.org"><package pattern="Microsoft.*" /></packageSource>
-  </packageSourceMapping>
-  <fallbackPackageFolders><clear /></fallbackPackageFolders>
-</configuration>
-```
+REPO2 本地演练：从 fork c8ab0680 的任务树，以已签 `.4` 为基准，仅重建双 RID wpfgfx，未签名。0 警告/0 错误；原始代码节等于 PUB3，65 个沿用运行时逐字节不变；全量模式仅 Validate/WhatIf 前置通过。此演练不是新正式版本，也没有发布授权。
 
-若序号不是 3，先把示例 csproj 的精确包版本和 Program.cs 中 `10.1.0.3` 自检预期一起改成自己的版本。以下假设序号仍为 3；同版本重打包必须换全新缓存和输出，不能复用 nuget.org `.3` 缓存：
+等价干跑使用显式 nativeTrimPrefix 将诊断路径保留为等长后缀，并用 nativePdbAltPaths 控制历史 PDB 元数据，再按已定位字段归一化比较 PE 节；没有 junction、没有改二进制代码或伪造 manifest commit。这些参数默认关闭；生产调试路径规范仍需单独决定。`nativeSourcePrefix` 的实验曾引出 C5049，映射 obj/PDB 又引出 LNK4099；最终通过路径不使用该方案，不压制警告。
 
-```powershell
-cd C:/src/WpfD3D11Runtime-Samples/WpfD3D11Demo
-$env:NUGET_PACKAGES = 'C:/build/demo-local-new/packages'
-$env:NUGET_HTTP_CACHE_PATH = 'C:/build/demo-local-new/http-cache'
-dotnet publish -c Release -r win-x64 --self-contained false `
-  --configfile C:/inputs/nuget-local.config `
-  --artifacts-path C:/build/demo-local-new/artifacts -o C:/build/demo-local-new/publish
-$demoProcess = Start-Process C:/build/demo-local-new/publish/WpfD3D11Demo.exe `
-  -ArgumentList '--selftest C:/build/demo-local-new/selftest.json' `
-  -WindowStyle Hidden -PassThru -Wait
-$demoProcess.ExitCode
-```
-
-检查 `.nupkg.metadata` 指向本地 feed、包内 manifest、JSON 模块路径/版本、D3D11 与无 D3D9，再按示例说明做官方 FDD 对照。ARM64 应独立发布并在对应设备原生验证。以上源码、R2R、签名、打包和本地 feed 命令是依据既有环境整理的模板，未在全新外部环境验证。
-
-## English notes
-
-- **Published:** WpfD3D11Runtime `10.0.14-d3d11.3` is on nuget.org. See the [samples repository](https://github.com/QuickerOrg/WpfD3D11Runtime-Samples) for run/publish/self-test commands.
-- **Scope:** .NET 10 WPF, win-x64/win-arm64, FDD/SC. No x86, trimming, single-file, AOT or consumer R2R. Compilation keeps official targeting packs. Shared-framework servicing does not update bundled WPF files.
-- **Versions:** custom FileVersion `10.1.0.3`, AssemblyVersion `10.0.0.0`, package baseline `10.0.14-d3d11.N`. This is not a Microsoft .NET 10.1 release.
-- **Source builds:** the runtime was built from a dotnet/dotnet VMR `src/wpf` slice; this repository uses standalone dotnet/wpf layout. The producer needs a matching VMR tree, prepared cache, Quicker R2R helpers, reference inputs and an equivalence report; it also hardcodes a cache location. Fresh external setup and standalone builds remain unverified.
-- **Tools:** recorded producer uses VS/MSBuild 18, v143 tools 14.44.35207/redist 14.44.35112, Windows SDK 10.0.26100.0 and .NET SDK 10.0.403. Build/Complete need PowerShell 7; signing/pack/consumer verification support Windows PowerShell 5.1. Signing is optional locally; Pack's `RequireSigned` validates signatures, never signs.
-- **Licenses:** retain the published package's `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`, `licenses/` and manifests. Third-party terms remain applicable. Historical source-side metadata is not the published package's current description.
+尚未在迁移入口实跑完整 WPF/R2R 图、托管增量、签名 Execute、签后打包、冷缓存恢复、新 SDK、消费 build/publish 或 GPU/ARM 运行验证；旧 `.3`/`.4` 的这些历史验证不冒充本次验证。全量签名角色、托管等价报告和独立签名机交接应在下一次获授权完整生产演练中验收。当前不据此删除历史 slice/VMR 或原件。
