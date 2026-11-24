@@ -1,117 +1,102 @@
-# WpfD3D11Demo
+# WpfD3D11Demo：D3D11 与实验性彩色 Emoji
 
-最小 .NET 10 WPF 示例：通过一条 `PackageReference` 使用已在 [nuget.org 发布的 WpfD3D11Runtime 10.0.14-d3d11.3](https://www.nuget.org/packages/WpfD3D11Runtime/10.0.14-d3d11.3)。不需要手动复制 DLL 或修改加载器。它是 QuickerOrg 维护的第三方运行时，不是微软官方产品。
+最小 .NET 10 WPF 示例，通过一条 `PackageReference` 使用 `WpfD3D11Runtime [10.0.14-d3d11.4]`，无需手动复制 DLL、修改加载器或 deps。它是 QuickerOrg 维护的第三方运行时，不是微软官方产品。该版本已发布到 nuget.org，默认配置即可还原；下文的本地包源仅用于验证尚未发布的候选包。
 
-A minimal .NET 10 WPF application using the published WpfD3D11Runtime package through one `PackageReference`. No manual DLL copies or loader changes are required. This is a third-party runtime maintained by QuickerOrg, not an official Microsoft product.
+A minimal .NET 10 WPF application using one package reference. This is a third-party runtime, not an official Microsoft product. The version is published on nuget.org and restores with the default configuration; the local feed below is only for validating unpublished candidates.
 
-## 前提 / Prerequisites
+## 前提与构建 / Build
 
-- Windows x64 或 ARM64、.NET 10 SDK；示例已用 SDK 10.0.403 验证。框架依赖运行需要相应架构、满足 `10.0.14` 运行时要求的 .NET 10 Windows Desktop Runtime。
-- 构建时需要 Windows PowerShell 5.1（`powershell.exe`），供包内校验器使用；仅运行已发布的应用不需要执行该校验器。
-- 默认 RID 是 `win-x64`；ARM64 请明确使用 `-r win-arm64`，并在 Windows ARM64 上原生运行。ARM64 需要系统提供 `D3DCompiler_47.dll`。
+需要 Windows、.NET 10 SDK（已验证 10.0.403）、构建时可调用的 Windows PowerShell 5.1，以及运行时相应架构的 .NET 10 Windows Desktop Runtime（10.0.14）。默认 x64；ARM64 请明确指定 `win-arm64`，在原生 ARM64 Windows 上运行，系统需提供 `D3DCompiler_47.dll`。
 
-Use Windows x64 or ARM64 and the .NET 10 SDK (tested with 10.0.403). Framework-dependent execution also needs the matching .NET 10 Windows Desktop Runtime satisfying the project's `10.0.14` runtime requirement. Builds use Windows PowerShell 5.1 for package validation. The default RID is `win-x64`; use `win-arm64` and native Windows ARM64 execution for ARM64, where the OS must provide `D3DCompiler_47.dll`.
+实验仓库：进入本 README 旁的 `WpfD3D11Demo` 子目录。公开 fork：进入 `samples/WpfD3D11Demo`。示例不依赖 Quicker；空的 `Directory.Build.props/targets` 隔离父级仓库构建规则。
 
-## 运行与发布 / Run and publish
-
-在 PowerShell 中执行；如果已经克隆仓库，从第二行进入示例目录即可：
-
-Run in PowerShell; if the repository is already cloned, enter the sample directory:
+Use Windows, the .NET 10 SDK, Windows PowerShell 5.1 for build checks, and the matching .NET 10 Windows Desktop Runtime. Enter the project directory before running these commands. Validate ARM64 on native Windows ARM64.
 
 ```powershell
-git clone --branch quicker/d3d11-facade https://github.com/QuickerOrg/wpf.git
-cd wpf/samples/WpfD3D11Demo
-dotnet run -r win-x64
+$env:DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE = 'true'
+$env:NUGET_PACKAGES = "$PWD/artifacts/packages"
+$env:NUGET_HTTP_CACHE_PATH = "$PWD/artifacts/http-cache"
+dotnet publish -c Release -r win-x64 --self-contained false `
+  --configfile ./nuget.config --artifacts-path ./artifacts/build-x64 `
+  -o ./artifacts/package-x64
+# ARM64: change RID to win-arm64 and use separate build/output directories.
 ```
 
-构建和框架依赖发布也可直接在本目录执行。普通运行关闭窗口后退出：
+默认页面保留渐变、旋转、阴影、半透明和实际模块诊断。Emoji 页面展示 14/28/48 DIP 的单码点、肤色、ZWJ（👩‍❤️‍👨、🧑🏽‍💻、家庭）、彩虹旗与国旗、中英文混排，以及连续的 1→2→1 缩放动画。窗口可调整大小，内容可滚动。窗口不请求激活；普通模式关闭窗口退出，selftest 约六秒自行关闭。
 
-Build or publish directly from this directory. Close the window to exit interactive mode:
+The default scene retains gradients, rotation, shadows, transparency and diagnostics. The Emoji scene covers the sequences above at 14/28/48 DIP, mixed Chinese/English text, and a repeating 1→2→1 scale animation. Resize and scroll as needed. Selftest windows close themselves after about six seconds.
+
+## 彩色开/关对照 / Color comparison
 
 ```powershell
-dotnet build -r win-x64
-dotnet publish -c Release -r win-x64 --self-contained false -o ./artifacts/package-x64
-./artifacts/package-x64/WpfD3D11Demo.exe
+./artifacts/package-x64/WpfD3D11Demo.exe --emoji
+./artifacts/package-x64/WpfD3D11Demo.exe --emoji --color=off
+# --emoji --color=on is equivalent to --emoji.
 ```
 
-自包含发布将 `--self-contained false` 改为 `--self-contained true`。ARM64 命令如下；将完整发布目录带到 Windows ARM64 机器运行，不要只复制 exe：
+`Main` 在进入禁止内联的 WPF 启动方法前调用 `Environment.SetEnvironmentVariable("QUICKER_WPF_COLOR_GLYPHS", "1")`；关闭方式设为 `"0"`。入口以原生 `GetEnvironmentVariableW` 复核，并确认设置前后 wpfgfx 均未加载。原生代码在首次 `DrawGlyphRun` 的 `Enabled()` 中读取并缓存进程环境，因此本设置先于读取。需要分别启动新进程；默认非 Emoji 页面设为关闭。
 
-For self-contained publishing, change `--self-contained false` to `--self-contained true`. For ARM64, publish as follows and run the complete output directory on Windows ARM64:
+`Main` sets the process environment before entering the non-inlined WPF startup method, verifies the native environment, and verifies wpfgfx has not loaded. Native `Enabled()` reads and caches it on the first glyph draw. Start a new process for each comparison; the default scene disables color.
 
-```powershell
-dotnet run -r win-arm64
-dotnet publish -c Release -r win-arm64 --self-contained false -o ./artifacts/package-arm64
-```
+运行时仍默认关闭彩色；`--emoji` 显式开启它。以下可选开关也须在启动前确定：
 
-本目录的空 [Directory.Build.props](Directory.Build.props) / [Directory.Build.targets](Directory.Build.targets) 阻断父仓库构建钩子；[global.json](global.json) 选择稳定 .NET 10 SDK，并允许向较新的 feature band 滚动。[nuget.config](nuget.config) 用 `<clear />` 清空继承的源、映射与 fallback，只从 nuget.org 获取本包和 `Microsoft.*`。请在本目录执行命令，以使用这里的 SDK 和 NuGet 配置。
-
-The empty build files isolate this sample from the WPF repository's build hooks. Its own `global.json` selects a stable .NET 10 SDK with feature-band roll-forward. Its `nuget.config` clears inherited sources, mappings and fallback folders, and uses only nuget.org for this package and `Microsoft.*`. Run commands from this directory so these configurations apply.
-
-## 窗口里看什么 / What to inspect
-
-窗口显示渐变、旋转文字、阴影和半透明卡片，可调整大小。诊断区每半秒更新：
-
-The resizable window displays gradients, rotating text, a shadow and a translucent card. Diagnostics update every half second:
-
-- `PresentationCore.dll` 和 `wpfgfx_cor3.dll` 的实际加载路径与四段数字 FileVersion：包版应来自应用输出目录，版本为 `10.1.0.3`。
-- `d3d11.dll: true`、`d3d9.dll: false`：报告进程是否加载这些模块。
-- `Tier` 是 `RenderCapability.Tier >> 16` 的值，`Frames` 是 WPF 渲染回调计数。Tier 取决于运行环境；加载 D3D11 且未加载 D3D9 本身不证明硬件 Tier 2。
-
-For the package build, `PresentationCore.dll` and `wpfgfx_cor3.dll` should load from the application output directory with FileVersion `10.1.0.3`; D3D11 should be loaded and D3D9 absent. `Tier` reports `RenderCapability.Tier >> 16`, and `Frames` counts WPF rendering callbacks. Tier depends on the environment; module presence alone does not prove hardware Tier 2.
-
-## 自动自检 / Automated self-test
-
-```powershell
-$demoProcess = Start-Process ./artifacts/package-x64/WpfD3D11Demo.exe `
-  -ArgumentList '--selftest ./artifacts/selftest-x64.json' `
-  -WindowStyle Hidden -PassThru -Wait
-$demoProcess.ExitCode
-```
-
-`--selftest <out.json>` 约六秒后写出 JSON 与同名 PNG 并退出。它显示自己的置顶窗口但不激活，不模拟鼠标输入，自动缩小再恢复窗口。JSON 记录模块路径、数字和原始版本文本、D3D11/D3D9 状态、Tier、帧数、缩放恢复和截图方法。`DesktopBitBlt` / `PrintWindow` / `WpfVisualFallback` 表示不同截图路径；WPF Visual 回退不等同于桌面出光证据。
-
-`--selftest <out.json>` writes JSON and a matching PNG after about six seconds, then exits. It displays its own topmost window without activation or simulated mouse input, and resizes/restores it automatically. JSON includes module paths and versions, D3D module state, Tier, frame count, resize status and capture method. A `WpfVisualFallback` capture is not proof of desktop presentation.
-
-| 退出码 / Exit code | 含义 / Meaning |
+| 开关 / Switch | 说明 / Meaning |
 | --- | --- |
-| `0` | 后端检查通过，渲染回调 >10，窗口尺寸已恢复，截图成功取得彩色内容 / Backend checks passed, >10 rendering callbacks, size restored, capture produced colored content |
-| `1` | 自检失败或运行异常 / Failed check or runtime exception |
-| `2` | 参数格式不是 `--selftest <out.json>` / Invalid argument shape |
-| `3` | 自检完成前关闭了窗口 / Window closed before completion |
+| `QUICKER_WPF_COLOR_GLYPHS_PREWARM=0` | 关闭彩色默认开启的后台预热 / Disable background prewarming |
+| `QUICKER_WPF_COLOR_GLYPHS_DISK_CACHE` | 设为应用选择的已有目录才开启；运行时不建目录 / Optional disk cache requiring an existing application-selected directory |
+| `QUICKER_WPF_RT_TIMING_LOG` | 可选诊断 JSONL 路径 / Optional diagnostic JSONL path |
 
-包版后端检查要求应用目录内的 `wpfgfx_cor3.dll` 为 `10.1.0.3`、`PresentationCore.dll` 也在同目录、D3D11 已加载且无 D3D9；**不要求 Tier 2**。无参数普通运行不执行这些通过/失败判定。输出路径必须可写。
+已验证 Segoe UI Emoji COLRv1；COLRv0、SVG、位图字体未覆盖，多适配器和设备丢失未实测。WPF shaping、字体回退与系统字体决定组合序列的呈现；国旗可能显示区域字母，不能据演示页声称支持所有旗帜。Qualcomm 采样截断差异仍存在。
 
-The package backend check requires application-local `wpfgfx_cor3.dll` version `10.1.0.3`, application-local `PresentationCore.dll`, D3D11 loaded and no D3D9. It **does not require Tier 2**. Interactive mode without arguments does not apply these pass/fail checks. Use a writable output path.
+Validated with Segoe UI Emoji COLRv1. COLRv0, SVG and bitmap fonts are not covered; multi-adapter/device-loss behavior is untested. WPF shaping/fallback and the system font determine sequence rendering; Windows 自带的 Segoe UI Emoji 不含国旗，因此示例去掉国旗并保留彩虹旗。Windows Segoe UI Emoji does not include national flags, so this demo omits them and retains the rainbow flag. Qualcomm sampling truncation remains.
 
-## 官方运行时对照 / Official runtime comparison
+## 自动验证 / Selftest
 
-关闭包引用，并使用独立中间物和输出目录，避免残留私有 DLL：
+自动窗口不激活、不拦截鼠标，先缩小再恢复，保存完整窗口截图和 JSON。Emoji 另保存白底 Emoji 区及纯文字区截图和像素哈希。先跑关闭，再跑开启：
 
-Disable the package reference and use separate intermediate and output directories to avoid stale private DLLs:
+Run off before on. Each selftest saves a complete screenshot and JSON; Emoji tests also save region images and raw pixel hashes.
 
 ```powershell
-dotnet build -c Release -r win-x64 -p:DemoUsePackage=false `
-  --artifacts-path ./artifacts/official-build
-dotnet publish -c Release -r win-x64 --self-contained false -p:DemoUsePackage=false `
-  --artifacts-path ./artifacts/official-build -o ./artifacts/official-x64
-./artifacts/official-x64/WpfD3D11Demo.exe
+$exe = "$PWD/artifacts/package-x64/WpfD3D11Demo.exe"
+Start-Process $exe -WindowStyle Hidden -Wait -ArgumentList '--selftest artifacts/original.json'
+Start-Process $exe -WindowStyle Hidden -Wait -ArgumentList '--emoji --color=off --selftest artifacts/off.json'
+Start-Process $exe -WindowStyle Hidden -Wait -ArgumentList '--emoji --color=on --selftest artifacts/on.json --baseline artifacts/off.json'
 ```
 
-同一份 [Program.cs](Program.cs) 会显示官方模块路径。官方 FDD 自检以模块来自 `shared/Microsoft.WindowsDesktop.App`、wpfgfx 不是私有 `10.1.0.3` 为后端条件；仍报告 `privateBackendSatisfied=false`。它不要求 D3D9 一定加载，也没有官方自包含版的自检判据。
+成功（退出码 0）要求：wpfgfx `10.1.0.4` 与 PresentationCore 位于应用目录、D3D11 已加载、无 D3D9、Tier 2、帧数大于 10、窗口尺寸恢复、Demo 未成为前台。Emoji 关闭时白底区彩色像素为 0，开启时大于 100；纯文字区域与关闭时逐字节一致，缩放采样达到 1 和 2 附近。开启模式的 selftest 必须传 `--baseline`。失败为 1，参数错误为 2，提前关闭为 3。
 
-The same source displays the official module paths. The official FDD self-test checks that modules come from `shared/Microsoft.WindowsDesktop.App` and wpfgfx is not private version `10.1.0.3`; `privateBackendSatisfied` remains false. It does not require D3D9 to be loaded. Official self-contained self-test criteria are not implemented.
+Exit 0 requires the private modules, D3D11 without D3D9, Tier 2, frames, restored size and no foreground activation. Emoji assertions check color presence/absence, exact text pixels against the off baseline, and scale extrema. An on selftest requires `--baseline`. Other exit codes: failure 1, invalid arguments 2, premature close 3.
 
-## 常见问题 / Troubleshooting
+`screenshotMethod` 区分 DesktopBitBlt、PrintWindow、WpfVisualFallback。Visual 回退不证明桌面出光；纯文字比较使用完整截图内的同一白底区域，内缩 2 个物理像素以排除分数坐标边缘与后方动态渐变的混合，全部文字仍在区域内。请检查完整截图及 JSON，不能只看裁剪区域。
 
-- **RID 错误**：示例已默认 `win-x64`，但在自己的应用中必须显式设置 RID。包的真实错误为 `WPFDR001`：“WpfD3D11Runtime 必须显式使用 win-x64 或 win-arm64 RID；无 RID、x86 和其它 RID 不受支持。”
-- **目标或发布选项错误**：`WPFDR002` 要求 .NET 10 WPF；`WPFDR003` 拒绝 trim、single-file、AOT、消费端 R2R（含 composite）；`WPFDR004` 要求生成 deps.json。不要为了通过编译而关闭包校验器。
-- **旧版本或来源不确定**：包引用精确锁定 `[10.0.14-d3d11.3]`。换一组全新的 `NUGET_PACKAGES`、`NUGET_HTTP_CACHE_PATH`、`--artifacts-path` 与发布目录后重试；缓存中的 `.nupkg.metadata` 可核对源。不要在同一输出目录里来回切换包版与官方版。
-- **SDK 或还原意外进入 WPF 仓库构建**：确认当前目录是本示例，且四个隔离文件仍在。也可给 restore/build/publish 显式传 `--configfile ./nuget.config`。
-- **运行时缺失或版本不对**：安装相应架构的 Windows Desktop Runtime，或使用自包含发布；查看 JSON 中的实际模块路径，不只看 NuGet 引用。共享框架补丁不会自动更新包内 WPF 文件。
-- **无 D3D11 / Tier 0 / 自检失败**：查看 JSON 的模块与 `error` 字段，检查会话、GPU/驱动和截图条件。Tier 0 单独出现不会使此自检失败；自检通过也不替代真实应用兼容性测试。
+The screenshot method is reported explicitly. A visual fallback is not proof of desktop scanout; inspect the full screenshot alongside JSON and the additional region images.
 
-For RID failures, pass `-r win-x64` or `-r win-arm64` (`WPFDR001`). `WPFDR002` requires .NET 10 WPF; `WPFDR003` rejects trimming, single-file, AOT and consumer R2R; `WPFDR004` requires deps.json. For stale files, retry with fresh package/HTTP caches, artifacts and publish directories, and inspect `.nupkg.metadata`. For SDK/source inheritance problems, run from this directory with its isolation files and explicit `--configfile ./nuget.config`. For runtime or rendering issues, inspect the actual module paths and JSON errors. Tier 0 alone does not fail this test, and a passing test does not establish full application compatibility.
+## 本地候选包源 / Local candidate feed
 
-支持范围、回退、已知 Qualcomm 采样差异及本地 feed 使用方法见 [运行时说明](../../eng/quicker/WpfD3D11Runtime/README.md)。后端在编译时确定，不能用环境变量切回官方后端。
+将候选 nupkg 放进项目目录下自建的 `feed` 文件夹，把下列内容保存为 `nuget.local.config`，publish 改用 `--configfile ./nuget.local.config`。默认配置仅访问 nuget.org；本地覆盖将本包精确映射到本地源，Microsoft 包仅映射到 nuget.org，不使用其它源。每次新候选换新的缓存、artifacts 和输出目录。
 
-See the [runtime documentation](../../eng/quicker/WpfD3D11Runtime/README.md) for supported configurations, rollback, known Qualcomm sampling differences and local-feed instructions. Environment variables cannot switch this build to the official backend.
+Place the candidate nupkg in an application-created `feed` directory and save this configuration as `nuget.local.config`. Restore with fresh caches and output directories. This package maps only to the local feed; Microsoft packages map only to nuget.org.
+
+```xml
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="wpf-runtime" value="./feed" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+  </packageSources>
+  <packageSourceMapping>
+    <clear />
+    <packageSource key="wpf-runtime"><package pattern="WpfD3D11Runtime" /></packageSource>
+    <packageSource key="nuget.org"><package pattern="Microsoft.*" /></packageSource>
+  </packageSourceMapping>
+  <fallbackPackageFolders><clear /></fallbackPackageFolders>
+</configuration>
+```
+
+## 官方对照与范围 / Official comparison and scope
+
+用独立输出 publish，增加 `-p:DemoUsePackage=false` 即可运行同源码官方 FDD 对照；默认 selftest 检查共享框架路径。官方 WPF 不支持此私有彩色开关，不能用彩色开启断言验收官方版。
+
+包支持 .NET 10 WPF、x64/ARM64、FDD/SC。新 wpfgfx 为 `10.1.0.4`，其它文件保留 .3 字节和版本（自建文件 `10.1.0.3`）。文件锁定 10.0.14，共享框架补丁不会自动更新。不支持 x86、裁剪、单文件、AOT、消费端 R2R。环境变量不能切回官方后端；回退需移除包引用，清理并重新构建/部署后重启。
+
+For official FDD comparison, use separate output with `-p:DemoUsePackage=false`. The private color switch does not enable color in official WPF. Supported scope: .NET 10 WPF, x64/ARM64, FDD/SC. Shared-framework servicing does not update bundled files. x86, trimming, single-file, AOT and consumer R2R are unsupported. Remove the package, clean and redeploy to return to the official backend.

@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -26,13 +28,43 @@ internal static class Program
     private static int Main(string[] args)
     {
         string? output = null;
-        if (args.Length != 0)
+        var emoji = false;
+        bool? color = null;
+        string? baseline = null;
+        for (var i = 0; i < args.Length; i++)
         {
-            if (args.Length != 2 || args[0] != "--selftest") return 2;
-            output = Path.GetFullPath(args[1]);
-            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+            switch (args[i])
+            {
+                case "--emoji": emoji = true; break;
+                case "--color=on": color = true; break;
+                case "--color=off": color = false; break;
+                case "--selftest" when i + 1 < args.Length: output = Path.GetFullPath(args[++i]); break;
+                case "--baseline" when i + 1 < args.Length: baseline = Path.GetFullPath(args[++i]); break;
+                default: return 2;
+            }
         }
-        try { return Run(output); }
+        if (!emoji && (color.HasValue || baseline is not null)) return 2;
+        var enabled = emoji && (color ?? true);
+        if (output is not null && enabled && baseline is null) return 2;
+        if (output is not null) Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        try
+        {
+            // Main 不触及 WPF；NoInlining 保证 JIT 不提前展开创建 Application 的方法。
+            var loadedBefore = GetModuleHandle("wpfgfx_cor3.dll") != 0;
+            Environment.SetEnvironmentVariable("QUICKER_WPF_COLOR_GLYPHS", enabled ? "1" : "0");
+            var nativeValue = new StringBuilder(8);
+            _ = GetEnvironmentVariable("QUICKER_WPF_COLOR_GLYPHS", nativeValue, nativeValue.Capacity);
+            var bootstrap = new JsonObject
+            {
+                ["wpfgfxLoadedBeforeSetting"] = loadedBefore,
+                ["wpfgfxLoadedAfterSetting"] = GetModuleHandle("wpfgfx_cor3.dll") != 0,
+                ["nativeEnvironmentValue"] = nativeValue.ToString(),
+                ["setBeforeWpf"] = !loadedBefore && GetModuleHandle("wpfgfx_cor3.dll") == 0
+            };
+            if (!bootstrap["setBeforeWpf"]!.GetValue<bool>() || nativeValue.ToString() != (enabled ? "1" : "0"))
+                throw new InvalidOperationException("Color switch must reach the process environment before WPF loads.");
+            return Run(output, emoji, enabled, baseline, bootstrap);
+        }
         catch (Exception error)
         {
             if (output is not null)
@@ -44,7 +76,13 @@ internal static class Program
         }
     }
 
-    private static int Run(string? output)
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetModuleHandleW")]
+    private static extern nint GetModuleHandle(string name);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetEnvironmentVariableW")]
+    private static extern uint GetEnvironmentVariable(string name, StringBuilder value, int size);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int Run(string? output, bool emoji, bool color, string? baseline, JsonObject bootstrap)
     {
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var diagnosticText = new TextBlock
@@ -81,14 +119,15 @@ internal static class Program
             Text = ExpectPrivate ? "WpfD3D11Runtime — 一条引用替换运行时" : "官方 WPF — 同源码对照",
             FontSize = 25, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap
         });
-        content.Children.Add(stage);
+        var emojiScene = emoji ? new EmojiScene(color) : null;
+        content.Children.Add(emojiScene?.View ?? (UIElement)stage);
         content.Children.Add(diagnosticText);
         var window = new Window
         {
             Title = "WpfD3D11Demo", Width = 920, Height = 690, MinWidth = 600, MinHeight = 440,
             Left = 24, Top = 24, Background = gradient,
             Content = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-            ShowActivated = output is null, ShowInTaskbar = output is null, Topmost = output is not null
+            ShowActivated = false, ShowInTaskbar = false, Topmost = output is not null
         };
         nint hwnd = 0;
         window.SourceInitialized += (_, _) =>
@@ -102,7 +141,13 @@ internal static class Program
         };
         var watch = Stopwatch.StartNew();
         long frames = 0;
-        EventHandler rendering = (_, _) => frames++;
+        var everForeground = false;
+        EventHandler rendering = (_, _) =>
+        {
+            frames++;
+            emojiScene?.ObserveScale();
+            if (hwnd != 0 && Native.GetForegroundWindow() == hwnd) everForeground = true;
+        };
         CompositionTarget.Rendering += rendering;
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         var resized = false;
@@ -132,7 +177,12 @@ internal static class Program
                 diagnostics = Diagnostics();
                 var privateBackend = diagnostics["privateBackendSatisfied"]!.GetValue<bool>();
                 var officialBackend = diagnostics["officialBackendSatisfied"]!.GetValue<bool>();
-                var passed = (ExpectPrivate ? privateBackend : officialBackend) && frames > 10 && restored;
+                var emojiFacts = emojiScene?.Validate(hwnd, screenshot, baseline);
+                var passed = (ExpectPrivate ? privateBackend : officialBackend) && frames > 10 && restored &&
+                    !everForeground && (emojiFacts is null || emojiFacts["passed"]!.GetValue<bool>());
+                diagnostics["everForeground"] = everForeground;
+                diagnostics["bootstrap"] = bootstrap;
+                diagnostics["emoji"] = emojiFacts;
                 diagnostics["passed"] = passed;
                 diagnostics["frames"] = frames;
                 diagnostics["elapsedSeconds"] = watch.Elapsed.TotalSeconds;
@@ -163,6 +213,7 @@ internal static class Program
             timer.Stop();
             CompositionTarget.Rendering -= rendering;
             rotation.BeginAnimation(RotateTransform.AngleProperty, null);
+            emojiScene?.Stop();
             gradient.GradientStops[1].BeginAnimation(GradientStop.ColorProperty, null);
             if (output is not null && !completed && !File.Exists(output))
                 File.WriteAllText(output, new JsonObject
@@ -210,8 +261,8 @@ internal static class Program
             ["applicationDirectory"] = AppContext.BaseDirectory,
             ["modules"] = modules, ["d3d11Loaded"] = d3d11, ["d3d9Loaded"] = d3d9,
             ["renderCapabilityTier"] = RenderCapability.Tier >> 16,
-            ["privateBackendSatisfied"] = gfxVersion == "10.1.0.3" && InApplication(gfx) && InApplication(core) && d3d11 && !d3d9,
-            ["officialBackendSatisfied"] = InSharedFramework(gfx) && InSharedFramework(core) && gfxVersion != "10.1.0.3"
+            ["privateBackendSatisfied"] = gfxVersion == "10.1.0.4" && InApplication(gfx) && InApplication(core) && d3d11 && !d3d9 && (RenderCapability.Tier >> 16) == 2,
+            ["officialBackendSatisfied"] = InSharedFramework(gfx) && InSharedFramework(core) && gfxVersion != "10.1.0.4"
         };
     }
 
@@ -232,6 +283,7 @@ internal static class Program
     {
         [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int Left, Top, Right, Bottom; }
         [DllImport("user32.dll")] internal static extern nint GetWindowLongPtr(nint hwnd, int index);
+        [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
         [DllImport("user32.dll")] internal static extern nint SetWindowLongPtr(nint hwnd, int index, nint value);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowRect(nint hwnd, out Rect rect);
         [DllImport("user32.dll")] private static extern nint GetDC(nint hwnd);

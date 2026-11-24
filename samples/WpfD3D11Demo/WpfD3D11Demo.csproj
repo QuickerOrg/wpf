@@ -14,6 +14,6 @@
     <DefineConstants Condition="'$(DemoUsePackage)' == 'true'">$(DefineConstants);DEMO_PACKAGE</DefineConstants>
   </PropertyGroup>
   <ItemGroup Condition="'$(DemoUsePackage)' == 'true'">
-    <PackageReference Include="WpfD3D11Runtime" Version="[10.0.14-d3d11.3]" />
+    <PackageReference Include="WpfD3D11Runtime" Version="[10.0.14-d3d11.4]" />
   </ItemGroup>
 </Project>
