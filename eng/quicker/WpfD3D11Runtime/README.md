@@ -2,7 +2,7 @@
 
 QuickerOrg 维护的第三方 **.NET 10 WPF D3D11 运行时替换包**，不是微软官方产品，也未获微软背书。当前版本 **[10.0.14-d3d11.3 已发布到 nuget.org](https://www.nuget.org/packages/WpfD3D11Runtime/10.0.14-d3d11.3)**；源码位于 [quicker/d3d11-facade](https://github.com/QuickerOrg/wpf/tree/quicker/d3d11-facade)。保留 WPF 上层渲染算法、应用 API 和官方编译引用，替换应用输出中的运行时文件。
 
-可直接运行的示例见 [WpfD3D11Demo](../../../samples/WpfD3D11Demo/README.md)。仅使用包不需要 Visual Studio C++ 工具链或 WPF 源码树。
+可直接运行的示例见 [WpfD3D11Runtime-Samples](https://github.com/QuickerOrg/WpfD3D11Runtime-Samples)。仅使用包不需要 Visual Studio C++ 工具链或 WPF 源码树。
 
 ## 使用与限制
 
@@ -210,7 +210,7 @@ powershell.exe -NoProfile -File "$producer/Pack-WpfD3D11Runtime.ps1" `
 若序号不是 3，先把示例 csproj 的精确包版本和 Program.cs 中 `10.1.0.3` 自检预期一起改成自己的版本。以下假设序号仍为 3；同版本重打包必须换全新缓存和输出，不能复用 nuget.org `.3` 缓存：
 
 ```powershell
-cd C:/src/wpf/samples/WpfD3D11Demo
+cd C:/src/WpfD3D11Runtime-Samples/WpfD3D11Demo
 $env:NUGET_PACKAGES = 'C:/build/demo-local-new/packages'
 $env:NUGET_HTTP_CACHE_PATH = 'C:/build/demo-local-new/http-cache'
 dotnet publish -c Release -r win-x64 --self-contained false `
@@ -226,7 +226,7 @@ $demoProcess.ExitCode
 
 ## English notes
 
-- **Published:** WpfD3D11Runtime `10.0.14-d3d11.3` is on nuget.org. See the [demo](../../../samples/WpfD3D11Demo/README.md) for run/publish/self-test commands.
+- **Published:** WpfD3D11Runtime `10.0.14-d3d11.3` is on nuget.org. See the [samples repository](https://github.com/QuickerOrg/WpfD3D11Runtime-Samples) for run/publish/self-test commands.
 - **Scope:** .NET 10 WPF, win-x64/win-arm64, FDD/SC. No x86, trimming, single-file, AOT or consumer R2R. Compilation keeps official targeting packs. Shared-framework servicing does not update bundled WPF files.
 - **Versions:** custom FileVersion `10.1.0.3`, AssemblyVersion `10.0.0.0`, package baseline `10.0.14-d3d11.N`. This is not a Microsoft .NET 10.1 release.
 - **Source builds:** the runtime was built from a dotnet/dotnet VMR `src/wpf` slice; this repository uses standalone dotnet/wpf layout. The producer needs a matching VMR tree, prepared cache, Quicker R2R helpers, reference inputs and an equivalence report; it also hardcodes a cache location. Fresh external setup and standalone builds remain unverified.
